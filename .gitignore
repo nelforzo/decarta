@@ -1,0 +1,35 @@
+# --- extracted encyclopedia content: stays off git (copyright) ---
+vendor/
+media/
+build/
+corpus.db
+*.corpus.db
+*.iso
+*.img
+*.dmg
+*.toast
+*.cdr
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# --- Swift / Xcode ---
+app/.build/
+.app-build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcodeproj/xcshareddata/IDEWorkspaceChecks.plist
+
+# --- macOS ---
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
