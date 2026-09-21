@@ -86,9 +86,15 @@ python3 -m decarta_extract ingest /Volumes/L03JXLRD1 --adapter encarta-its \
 
 - Extractor, corpus format and app shell work end to end — but only against the
   `sample-data/` fixture. That fixture exercises the pipeline; it is not the product.
-- The disc itself is not ingestible yet. The `generic-html` adapter finds 35 UI-chrome
-  pages and zero articles on this disc; the real content sits inside LZX-compressed
-  `ITSS` streams and needs an `encarta-its` adapter (ITSS directory reader + LZX
-  decoder). That adapter is the critical path and is not written yet.
-- After the adapter: Japanese search indexing (see architecture doc), then media
-  (images/audio/video) into the manifest.
+- The disc itself is not ingestible yet — but the format is now fully mapped, and the
+  route is verified. `generic-html` finds 35 UI-chrome pages and zero articles here; the
+  payload is 39,491 XML articles inside LZX-compressed `ITSS` containers, and the
+  format has been probed end to end: 7-Zip opens the containers, title metadata joins to
+  bodies by `refid`, and a throwaway adapter built all 40,320 articles into a 208 MB
+  `corpus.db` in 19.8 s with `decarta_extract verify` clean. See `docs/DISC-SOURCES.md`.
+- What is still missing is the real `encarta-its` adapter in `extractor/` (the probe
+  lived in `/tmp`), plus the Japanese search path and character counts the data forces
+  (see `docs/ARCHITECTURE.md`). Media decoding of proprietary thumbnails/audio/video is
+  the long tail.
+- After that: media manifest from the `<assoc>` links, and rendering fidelity based on
+  the XSLT the disc itself ships (`ENCXSL.ITS`).

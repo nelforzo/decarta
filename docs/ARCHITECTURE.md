@@ -8,10 +8,10 @@ and serve it from a native offline macOS app. The disc is a source, not a depend
 1. **Acquire** — mount the DVD/ISO read-only (`hdiutil attach -readonly -nobrowse`).
    Nothing is copied into the repo.
 2. **Decode** — the payload is not files: it is 64 `.ITS` files, Microsoft InfoTech
-   Storage (`ITSS`, same container family as `.CHM`) with LZX-compressed streams. Read
-   the ITSS directory, then inflate the streams into an inner tree in a scratch dir (or
-   stream them in memory). This stage is source-agnostic plumbing; see
-   `docs/DISC-SOURCES.md` for the exact byte layout on this disc.
+   Storage (`ITSS`, same container family as `.CHM`) with LZX-compressed streams.
+   Verified route: `7zz` opens them directly (`7zz l -slt` to enumerate members,
+   `7zz x` to extract into a scratch dir), so no decoder has to be written — see
+   `docs/DISC-SOURCES.md` for the layout and the measured timings.
 3. **Parse** — the `encarta-its` adapter walks that inner tree and yields normalized
    `Article` records (`slug`, `title`, `body`, `category`, `source_path`, media refs).
    Article text, media and catalog indexes come from separate containers
@@ -45,26 +45,39 @@ rather than half-rendering it.
 
 ## Search, and why Japanese changes it
 
-The corpus is Japanese, and FTS5's default `unicode61` tokenizer is unusable for it.
-Measured on SQLite 3.54: the sentence
+The corpus is Japanese, and FTS5's default `unicode61` tokenizer cannot serve it.
+Measured on the real extracted corpus (3,000 articles, SQLite 3.54):
 
-    富士山は日本で最も高い山である。火山としても知られる。
+- `unicode61` splits CJK only at punctuation, so a clause becomes one token. Those
+  3,000 articles produced 150,099 distinct terms, **41.3 % of them longer than 12
+  characters**, with a median term like `第39番札所の延光寺` — a whole clause, not a word.
+- Consequence: a query matches only when it equals an entire punctuation-delimited run.
+  Searching the exact article title `自由の女神` returns **0 hits**; `富士山` returns 6 only
+  because some runs happen to be exactly that, while the 19 tokens that merely *begin*
+  with it are unreachable.
 
-tokenizes as **two tokens**, `富士山は日本で最も高い山である` and `火山としても知られる`
-— unicode61 treats runs of CJK as single alphanumeric tokens and finds no word
-boundaries. A query for `富士山`, or even for the exact sentence token, returns nothing
-useful for search UX.
-
-The `trigram` tokenizer (SQLite ≥ 3.34, present here) fixes all queries of three
-characters or more: `富士山`, `である`, and any longer substring match. It cannot serve
-two-character queries at all — `火山` and `富士` return zero hits and must be routed to a
-`LIKE '%…%'` scan over the article table (or a bigram index later if that scan is too
-slow at full corpus size).
+`trigram` (SQLite ≥ 3.34, present here) fixes every query of three characters or more —
+`自由の女神` → 1 hit, `富士山` → 21 on the same data — and it also survives mid-word
+substring queries, which is what Japanese users actually type. It cannot serve
+two-character queries at all: `火山` and `栄養` return 0 and must go to a `LIKE '%…%'`
+scan over `articles`, or to a bigram index later if that scan proves too slow at full
+corpus size.
 
 So `index.py` should build the FTS table with `tokenize=trigram` for Japanese corpora,
-keep a `LIKE` fallback for <3-character queries, and reserve `unicode61` for
-Latin-script fixtures. Ranking is bm25 with a title weight boost; snips come from
+route queries shorter than three characters to `LIKE`, and reserve `unicode61` for
+Latin-script fixtures. Ranking stays bm25 with a title weight boost; snips come from
 `snippet()`.
+
+## What the Japanese data changes in the schema
+
+- `word_count` counts whitespace-separated tokens and is meaningless here: measured
+  averages were 11.6 "words" against 877 characters per article (longest 79,414
+  characters). The corpus needs character counts; treat this as schema v2 rather than
+  shipping a number the UI cannot explain.
+- `slug` should be the disc's numeric `refid`: it is already ASCII and stable, so no
+  transliteration is needed and cross-references resolve by id.
+- `category`: articles carry no taxonomy on disc, so derive the browse axis from the
+  metadata's `<jtitle>` (五十音 bucket) rather than inventing subject classes.
 
 ## App
 
