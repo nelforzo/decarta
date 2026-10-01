@@ -41,19 +41,19 @@ struct LaunchOptions {
     }
 
     static let usage = """
-    Decarta — offline reader for the 2003-era encyclopedia corpus.
+    decarta — offline reader for the 2003-era encyclopedia corpus.
 
-      Decarta [--corpus <path/to/corpus.db>] [--open <refid>]
-      Decarta --selftest [path/to/corpus.db]
+      decarta [--corpus <path/to/corpus.db>] [--open <refid>]
+      decarta --selftest [path/to/corpus.db]
 
     --open takes an article's refid (its slug) and opens straight to it.
     Without --corpus the app looks for build/corpus.db, then
-    ~/Library/Application Support/Decarta/corpus.db.
+    ~/Library/Application Support/decarta/corpus.db.
     """
 
     /// Ordered search for a usable corpus.
     ///
-    /// A packaged `Decarta.app` carries its own corpus, and that must win over anything in
+    /// A packaged `decarta.app` carries its own corpus, and that must win over anything in
     /// the current working directory — otherwise launching the installed app from inside
     /// the repo would silently open the development build.
     static func resolveCorpus(explicit: URL?) -> URL? {
@@ -71,7 +71,7 @@ struct LaunchOptions {
             .appendingPathComponent("build/corpus.db"))
         if let support = FileManager.default.urls(for: .applicationSupportDirectory,
                                                   in: .userDomainMask).first {
-            candidates.append(support.appendingPathComponent("Decarta/corpus.db"))
+            candidates.append(support.appendingPathComponent("decarta/corpus.db"))
         }
         if !isAppBundle, let bundled { candidates.append(bundled) }
 

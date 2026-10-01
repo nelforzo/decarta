@@ -44,7 +44,7 @@ struct DecartaApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Decarta") {
+        WindowGroup("decarta") {
             ContentView()
                 .environmentObject(state)
         }

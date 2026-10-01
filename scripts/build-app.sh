@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Build a self-contained Decarta.app: ingest the disc, build the reader, package it into
+# Build a self-contained decarta.app: ingest the disc, build the reader, package it into
 # a bundle that carries its own corpus and pictures and can be copied to /Applications.
 #
 #   scripts/build-app.sh                     # ingest the mounted disc, then package
@@ -19,11 +19,11 @@ DISC="${DISC:-/tmp/encarta_mnt}"
 CORPUS="${CORPUS:-build/corpus.db}"
 MEDIA_OUT="${MEDIA_OUT:-build/media}"
 SCRATCH="${SCRATCH:-build/its-scratch}"
-OUT="${OUT:-build/Decarta.app}"
+OUT="${OUT:-build/decarta.app}"
 SKIP_INGEST="${SKIP_INGEST:-0}"
 PYTHON="${PYTHON:-python3}"
 CONFIG="${CONFIG:-release}"
-APP_NAME=Decarta
+APP_NAME=decarta
 
 log() { printf '→ %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -57,8 +57,8 @@ cp "$BIN" "$OUT/Contents/MacOS/$APP_NAME"
 cp packaging/Info.plist "$OUT/Contents/Info.plist"
 
 # Icon: committed as a .icns; regenerate the design with packaging/make-icon.py.
-[ -f packaging/Decarta.icns ] || die "missing packaging/Decarta.icns (run packaging/make-icon.py)"
-cp packaging/Decarta.icns "$OUT/Contents/Resources/$APP_NAME.icns"
+[ -f packaging/decarta.icns ] || die "missing packaging/decarta.icns (run packaging/make-icon.py)"
+cp packaging/decarta.icns "$OUT/Contents/Resources/$APP_NAME.icns"
 
 # The reader looks for corpus.db in its Resources and for a media/ directory beside it,
 # so this layout is what makes the bundle self-contained.

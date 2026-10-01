@@ -1,7 +1,7 @@
 import Foundation
 
 /// Headless end-to-end check: corpus -> schema -> search -> article body -> relations.
-/// `Decarta --selftest <corpus.db>` exits non-zero if any link in the chain is broken.
+/// `decarta --selftest <corpus.db>` exits non-zero if any link in the chain is broken.
 enum Selftest {
     static func run(corpusPath: URL?) -> Int32 {
         var failures: [String] = []

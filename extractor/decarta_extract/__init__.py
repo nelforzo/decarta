@@ -1,1 +1,1 @@
-"""Decarta corpus extractor: turn a 2000s DVD encyclopedia into one offline corpus."""
+"""decarta corpus extractor: turn a 2000s DVD encyclopedia into one offline corpus."""

@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Decarta</string>
+	<string>decarta</string>
 	<key>CFBundleDisplayName</key>
-	<string>Decarta</string>
+	<string>decarta</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.nelforzo.decarta</string>
 	<key>CFBundleExecutable</key>
-	<string>Decarta</string>
+	<string>decarta</string>
 	<key>CFBundleIconFile</key>
-	<string>Decarta</string>
+	<string>decarta</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>

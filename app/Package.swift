@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "Decarta",
+    name: "decarta",
     platforms: [.macOS(.v13)],
     targets: [
         .executableTarget(
-            name: "Decarta",
-            path: "Sources/Decarta",
+            name: "decarta",
+            path: "Sources/decarta",
             linkerSettings: [.linkedLibrary("sqlite3")]
         )
     ]

@@ -1,4 +1,4 @@
-# Decarta
+# decarta
 
 Reuse an outdated 2000s Windows encyclopedia — Microsoft Encarta 2003, Japanese
 edition (disc `L03JXLRD`) — inside a new native macOS app. Port the content, not the
@@ -18,7 +18,7 @@ Two halves:
   browse-by-category and article reading. The disc is not needed at runtime.
 
 ```
-Encarta 2003 DVD  ──(extractor)──▶  corpus.db (+ media/)  ──(app)──▶  Decarta.app
+Encarta 2003 DVD  ──(extractor)──▶  corpus.db (+ media/)  ──(app)──▶  decarta.app
       │                                   │
   mounted read-only                  vendored, git-ignored
 ```
@@ -73,12 +73,12 @@ docs/               # architecture, corpus format, disc-source notes
 configuration, and assembles a bundle that carries its own content:
 
 ```
-build/Decarta.app/Contents/
-  MacOS/Decarta              # the reader
+build/decarta.app/Contents/
+  MacOS/decarta              # the reader
   Info.plist                 # version from `git describe`, bundle id com.nelforzo.decarta
   Resources/corpus.db        # the whole corpus (SQLite + FTS5)
   Resources/media/baggage/   # the pictures the corpus references
-  Resources/Decarta.icns     # the icon (regenerate with packaging/make-icon.py)
+  Resources/decarta.icns     # the icon (regenerate with packaging/make-icon.py)
 ```
 
 The corpus is written into the bundle with `VACUUM INTO` and left in rollback-journal
@@ -94,11 +94,11 @@ when it is moved, without pretending to be a notarised distribution.
 
 The icon is a 5x7 pixel-font `d` on a white rounded square, drawn as literal squares so
 the letter stays hard-edged; only the rounded background is supersampled. `make-icon.py`
-regenerates `Decarta.icns` if the design changes — it is not needed for a normal build.
+regenerates `decarta.icns` if the design changes — it is not needed for a normal build.
 
 ```sh
 SKIP_INGEST=1 ./scripts/build-app.sh   # repackage from an existing corpus.db in seconds
-cp -R build/Decarta.app /Applications/
+cp -R build/decarta.app /Applications/
 ```
 
 ## Quick start
@@ -115,7 +115,7 @@ make query Q="自由の女神"
 make run
 
 # A self-contained app you can keep in /Applications:
-make dist            # ingest the disc, build, and package build/Decarta.app
+make dist            # ingest the disc, build, and package build/decarta.app
 ```
 
 Without a disc, the same commands work against `sample-data/`:

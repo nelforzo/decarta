@@ -1,4 +1,4 @@
-# Decarta — corpus pipeline + native app.
+# decarta — corpus pipeline + native app.
 #
 # `make` alone: build the sample corpus, verify it, build the app, run its selftest.
 #
@@ -19,7 +19,7 @@ MEDIA ?= 1
 SCRATCH ?= build/its-scratch
 ISO ?= encarta2003.iso
 DISC ?= /tmp/encarta_mnt
-BIN := app/.build/debug/Decarta
+BIN := app/.build/debug/decarta
 Q ?=
 
 .DEFAULT_GOAL := all
@@ -64,7 +64,7 @@ list:
 app:
 	cd app && swift build
 
-## build a self-contained Decarta.app (ingests the disc; SKIP_INGEST=1 to repackage)
+## build a self-contained decarta.app (ingests the disc; SKIP_INGEST=1 to repackage)
 dist:
 	./scripts/build-app.sh
 

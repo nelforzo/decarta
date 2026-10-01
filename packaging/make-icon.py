@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Generate the Decarta app icon: a pixel-font `d` on a white rounded square.
+"""Generate the decarta app icon: a pixel-font `d` on a white rounded square.
 
 The letter is a 5x7 bitmap drawn as literal filled squares, so its pixels stay hard-edged
 at every size — that is the whole point of the look. Only the rounded-square background is
 supersampled, because a stair-stepped corner would just look like a bug.
 
-    packaging/make-icon.py            # writes packaging/Decarta.icns + a preview PNG
+    packaging/make-icon.py            # writes packaging/decarta.icns + a preview PNG
 
 Run it only when the design changes; packaging/build-app.sh just copies the .icns.
 """
@@ -91,11 +91,11 @@ def main() -> int:
     master.save(master_png)
 
     with tempfile.TemporaryDirectory() as tmp:
-        iconset = Path(tmp) / "Decarta.iconset"
+        iconset = Path(tmp) / "decarta.iconset"
         iconset.mkdir()
         for name, size in ICONSET:
             master.resize((size, size), RESAMPLE).save(iconset / name)
-        out = root / "Decarta.icns"
+        out = root / "decarta.icns"
         result = subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(out)],
                                 capture_output=True, text=True)
         if result.returncode != 0:

@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import SQLite3
 
-/// Read-only reader for a Decarta corpus (`corpus.db`, schema v2).
+/// Read-only reader for a decarta corpus (`corpus.db`, schema v2).
 ///
 /// The app never writes: the corpus is opened SQLITE_OPEN_READONLY and every query
 /// goes through `query`.
@@ -97,7 +97,7 @@ final class Corpus {
     /// Find the media tree, preferring what the corpus recorded but falling back to a
     /// `media/` directory beside the corpus file.
     ///
-    /// The fallback is what makes a packaged `Decarta.app` self-contained: the corpus is
+    /// The fallback is what makes a packaged `decarta.app` self-contained: the corpus is
     /// built on a machine where the media lived under `build/`, so the recorded
     /// `meta.media_root` is an absolute path that means nothing once the app is copied to
     /// /Applications. Inside the bundle the pictures sit next to `corpus.db` instead.
