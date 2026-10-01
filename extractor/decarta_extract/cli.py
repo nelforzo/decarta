@@ -191,7 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--adapter", default="generic-html",
                    help="generic-html (fixture/HTML discs) or encarta-its (the Encarta DVD)")
     p.add_argument("--media-out", default=None,
-                   help="copy referenced assets here (default: don't copy)")
+                   help="copy referenced pictures (<image> assets) here; other media "
+                        "stays referenced-but-uncopied (default: don't copy)")
     p.add_argument("--tokenizer", default="auto", choices=["auto", *index.TOKENIZERS],
                    help="FTS tokenizer; auto picks per adapter (trigram for the disc)")
     p.add_argument("--scratch", default=None,

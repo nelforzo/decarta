@@ -95,6 +95,14 @@ enum Selftest {
                     _ = backlinks
                 }
             }
+
+            // Pictures: every sampled media row must resolve to a file the reader can load.
+            if corpus.mediaRoot != nil {
+                let stats = try corpus.mediaResolution(sample: 300)
+                check("pictures resolve to files on disk",
+                      stats.checked > 0 && stats.checked == stats.resolved,
+                      "\(stats.resolved)/\(stats.checked)")
+            }
         } catch {
             print("FAIL  query: \(error.localizedDescription)")
             failures.append("query")

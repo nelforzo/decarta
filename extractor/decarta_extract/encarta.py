@@ -50,6 +50,10 @@ CONVERTIBLE_MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".wav", ".wma", ".mp3",
 # `<files>` children we turn into manifest rows. `<ticon>` is deliberately absent: it is
 # the same handful of generic type icons on every record, not article content.
 ASSET_KINDS = {"image": "image", "thumb": "thumbnail", "picon": "thumbnail"}
+# The `<image>` child is the picture a reader displays; `<thumb>`/`<picon>` are its
+# proprietary derivatives (.jsm/.jtn/.gsm/.gtn) and stay referenced-but-uncopied.
+PICTURE_KIND = "image"
+PICTURE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".dib", ".tif", ".tiff"}
 
 INLINE_SKIP = {"inlinebmp", "bmp", "image", "picon", "thumb", "ticon", "sec", "formula"}
 BLOCK_TAGS = {"pkey", "sectiontitle", "headline", "listitem", "quote", "author",
@@ -339,12 +343,16 @@ def encarta_its(root: Path, media_out: Path | None = None, *,
                 continue
             bodies[refid] = parse_body(xml_file.read_bytes())
 
-    media_index: dict[str, str] | None = None
+    article_refids = {refid for refid, rec in records.items() if rec.group == "article"}
+
+    # Pictures are copied up front, container by container: extracting the handful of
+    # containers that hold them once is orders of magnitude cheaper than one 7-Zip
+    # invocation per member (measured: 8,157 pictures live in 3 containers).
     if media_out is not None and copy_media:
         media_out.mkdir(parents=True, exist_ok=True)
-        media_index = _media_index(root)
+        needed = _picture_members(records, article_refids)
+        _copy_pictures(needed, _media_index(root), media_out)
 
-    article_refids = {refid for refid, rec in records.items() if rec.group == "article"}
     emitted = 0
     for refid in sorted(records, key=lambda value: (len(value), value)):
         record = records[refid]
@@ -367,8 +375,8 @@ def encarta_its(root: Path, media_out: Path | None = None, *,
         article.xrefs = [(target, label) for target, label in xrefs
                          if target in article_refids]
         article.media = _article_media(record, records)
-        if media_index is not None and media_out is not None:
-            _copy_media(article.media, media_index, media_out)
+        if media_out is not None:
+            _attach_copied(article.media, media_out)
 
         emitted += 1
         yield article
@@ -402,20 +410,58 @@ def _article_media(record: DataRecord, records: dict[str, DataRecord]) -> list[M
     return refs
 
 
-def _copy_media(refs: list[MediaRef], media_index: dict[str, str], media_out: Path) -> None:
-    """Extract the referenced members that a reader can display, in place."""
-    for ref in refs:
-        if ref.kind != "image" or ref.abs_path is not None:
+def _picture_members(records: dict[str, DataRecord],
+                     article_refids: set[str]) -> set[str]:
+    """Every picture member an article references, as one flat set.
+
+    Walks the same `<assoc group="media">` links the manifest uses, so what is copied
+    out is exactly what the reader can show.
+    """
+    needed: set[str] = set()
+    for refid in article_refids:
+        for target, group in records[refid].forward:
+            if group != "media":
+                continue
+            media_record = records.get(target)
+            if media_record is None:
+                continue
+            for kind, member in media_record.files:
+                if kind == PICTURE_KIND and Path(member).suffix.lower() in PICTURE_SUFFIXES:
+                    needed.add(member)
+    return needed
+
+
+def _copy_pictures(needed: set[str], media_index: dict[str, str], media_out: Path) -> None:
+    """Extract the containers holding the needed pictures, then prune to those members.
+
+    Whole-container extraction is the cheap path: the three containers with pictures on
+    this disc hold only ~2,400 members we do not want, against 8,157 we do. Extracting
+    then pruning touches only members of the container just unpacked, so a media tree
+    shared with other content is left alone.
+    """
+    by_container: dict[str, set[str]] = {}
+    for member in needed:
+        container = media_index.get(member) or media_index.get(Path(member).name)
+        if container:
+            by_container.setdefault(container, set()).add(member)
+
+    for container, members in sorted(by_container.items()):
+        path = Path(container)
+        # Skip containers already fully copied out, so a re-ingest over an existing
+        # media tree does not re-expand several hundred MB of containers.
+        if all((media_out / member).exists() for member in members):
             continue
-        container = media_index.get(ref.member) or media_index.get(Path(ref.member).name)
-        if not container:
+        extract_members(path, media_out)
+        for member in list_members(path):
+            if member not in members:
+                (media_out / member).unlink(missing_ok=True)
+
+
+def _attach_copied(refs: list[MediaRef], media_out: Path) -> None:
+    """Point each reference at its file on disk, when the bytes were copied."""
+    for ref in refs:
+        if ref.kind != PICTURE_KIND or ref.abs_path is not None:
             continue
         dest = media_out / Path(ref.member)
-        if not dest.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                extract_members(Path(container), media_out, [ref.member])
-            except ItsError:
-                continue
         if dest.exists():
             ref.abs_path = dest

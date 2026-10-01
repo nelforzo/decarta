@@ -120,10 +120,14 @@ The adapter lives in `extractor/decarta_extract/encarta.py` and is wired into th
 4. **Media pass.** The manifest comes from the article record's `<assoc group="media">`
    links, resolved through the media records' `<files>` children, which name members as
    `msencdata::baggage/<member>` — and the media containers store exactly `baggage/<member>`.
-   With `--media-out`, referenced `<image>` members are extracted from the container found
-   by one listing pass over `MED*`/`PICON*`/`THUMB*`/`SW*`. ``<ticon>`` is skipped: it is
-   the same generic type icon on every record, not article content. `<picon>`/`<thumb>`
-   are recorded as `thumbnail` (proprietary `.jsm`/`.jtn`/`.gsm`/`.gtn`) and not converted.
+   **Pictures** (`<image>` → `.jpg`/`.gif`) are copied to `--media-out` by extracting the
+   three containers that hold them (`MEDSTD00`, `MEDSTD01`, `MEDSTD`) once each and
+   pruning to the referenced members — 8,157 files / 215 MiB / 2.9 s, versus one 7-Zip
+   call per member. ``<ticon>`` is skipped: it is the same generic type icon on every
+   record, not article content. `<picon>`/`<thumb>` are recorded as `thumbnail`
+   (proprietary `.jsm`/`.jtn`/`.gsm`/`.gtn`) and, with audio/video, stay
+   referenced-but-uncopied. `meta.media_root` is written absolute so the reader can
+   resolve the files from any working directory.
 5. **Text handling.** Bodies are UTF-8, so no CP932 path is needed here; `_decode`'s
    never-raise behaviour is retained for other containers. The slug is the numeric
    `refid`. The reading comes from `<jtitle>` with the leading repeat of the display title

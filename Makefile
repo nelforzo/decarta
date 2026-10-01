@@ -14,6 +14,8 @@ SOURCES ?= $(SAMPLE_ROOT)
 ADAPTER ?= generic-html
 TOKENIZER ?= auto
 MEDIA_OUT ?= build/media
+## ingest-disc copies pictures unless MEDIA=0
+MEDIA ?= 1
 SCRATCH ?= build/its-scratch
 ISO ?= encarta2003.iso
 DISC ?= /tmp/encarta_mnt
@@ -33,11 +35,11 @@ ingest:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m decarta_extract ingest "$(SOURCES)" \
 		--adapter $(ADAPTER) --tokenizer $(TOKENIZER) --media-out $(MEDIA_OUT)
 
-## ingest the real Encarta DVD; add MEDIA=1 to also copy referenced assets
+## ingest the real Encarta DVD; pictures are copied by default (MEDIA=0 to skip)
 ingest-disc:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m decarta_extract ingest "$(DISC)" \
 		--adapter encarta-its --scratch $(SCRATCH) \
-		$(if $(MEDIA),--media-out $(MEDIA_OUT),)
+		$(if $(filter 1,$(MEDIA)),--media-out $(MEDIA_OUT),)
 
 mount:
 	hdiutil attach -readonly -nobrowse -mountpoint "$(DISC)" "$(ISO)"

@@ -99,6 +99,29 @@ These are applied in v2, not proposals:
 - `xrefs` makes the 306,408 article-to-article cross-references navigable instead of
   leaving them as dead inline text.
 
+## Pictures
+
+The reader shows the disc's pictures; nothing else from `<files>` is converted yet.
+
+- Every `<image>` member an article references is copied to `--media-out`
+  (`build/media/baggage/<name>`), and the corpus records `meta.media_root` so the app can
+  find them. On this disc that is **8,157 files (6,921 `.jpg`, 1,236 `.gif`), 215 MiB**,
+  referenced 15,673 times by 39,491 articles — so most pictures are shared between
+  articles and deduplication matters.
+- Copying is done container-by-container: the pre-pass collects the needed members, the
+  three containers that hold them (`MEDSTD00`, `MEDSTD01`, `MEDSTD`) are extracted once
+  each, then pruned to just the referenced members. Whole-container extraction beats
+  per-member extraction because 7-Zip must inflate the containing block regardless —
+  measured 2.9 s for all 8,157, against ~8,000 subprocess invocations the naive way.
+  Containers already fully copied are skipped on re-ingest.
+- `meta.media_root` is stored **absolute**; the app also accepts a relative value and
+  anchors it to the corpus's own directory, so a corpus behaves the same wherever it is
+  opened from.
+- `<thumb>`/`<picon>` (`.jsm`/`.jtn`/`.gsm`/`.gtn`) and audio/video stay
+  referenced-but-uncopied; the reader labels them as such rather than showing a gap.
+- `--selftest` asserts that sampled picture rows resolve to files, since the media path
+  is otherwise invisible to a headless run.
+
 ## App
 
 - SwiftPM executable target, SwiftUI `App` lifecycle, macOS 13+.

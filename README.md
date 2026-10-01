@@ -70,7 +70,7 @@ make                 # sample corpus -> verify -> app build -> headless selftest
 
 # The real disc (see below for the mount):
 make mount           # hdiutil attach -readonly -nobrowse -mountpoint /tmp/encarta_mnt
-make ingest-disc     # DISC defaults to /tmp/encarta_mnt; MEDIA=1 also copies images
+make ingest-disc     # DISC defaults to /tmp/encarta_mnt; copies pictures (MEDIA=0 to skip)
 make verify
 make list            # 五十音 bucket counts
 make query Q="自由の女神"
@@ -98,9 +98,11 @@ make ingest SOURCES=sample-data ADAPTER=generic-html   # writes build/corpus.db
   (`<jtitle>`); 38,893 of 39,491 articles land in a かな row, 21 in その他.
 - The app reads the corpus read-only and adds cross-reference navigation, "referenced
   by" backlinks, media with captions, paged entry lists and 五十音 sidebar sections.
-- Media: the manifest is built from the catalog's `<assoc group="media">` links. The
-  `<image>` assets (`.jpg`/`.gif`) can be copied out with `MEDIA=1`; `.jsm`/`.jtn`/`.gsm`/
-  `.gtn` thumbnails and other proprietary formats are referenced but not converted — the
-  documented long tail. Rendering fidelity from the disc's own `ENCXSL.ITS` is untouched.
+- Pictures: `make ingest-disc MEDIA=1` copies every referenced picture — **8,157 files
+  (.jpg/.gif), 215 MiB** — into `build/media/baggage/`, and the reader displays them with
+  captions. The manifest comes from the catalog's `<assoc group="media">` links, so only
+  pictures an article actually references are copied; the three containers that hold them
+  are unpacked once each and pruned. Proprietary thumbnail derivatives (`.jsm`/`.jtn`/`.
+  gsm`/`.gtn`) and audio/video stay referenced-but-uncopied — the documented long tail.
   `media.caption` holds the asset's title; the disc's longer descriptive `<caption>` text
   (2.0M characters) is parsed but not yet stored — see `docs/DISC-SOURCES.md`.

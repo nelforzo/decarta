@@ -55,12 +55,15 @@ final class AppState: ObservableObject {
 
     let corpus: Corpus?
 
-    init(corpus: Corpus?) {
+    init(corpus: Corpus?, openSlug: String? = nil) {
         self.corpus = corpus
         if corpus == nil {
             errorMessage = "No corpus found. Build one with `make ingest`, or pass --corpus <path>."
         }
         reload()
+        if let openSlug {
+            open(slug: openSlug)
+        }
     }
 
     var canGoBack: Bool { history.count > 1 }

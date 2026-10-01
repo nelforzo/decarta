@@ -240,23 +240,28 @@ private struct MediaGallery: View {
     let media: [Corpus.Media]
     let corpus: Corpus?
 
-    private var images: [(Corpus.Media, URL)] {
-        media.compactMap { item in
-            guard item.kind == "image", let url = corpus?.url(for: item) else { return nil }
+    /// Only `<image>` records are pictures. `<thumb>`/`<picon>` are proprietary
+    /// derivatives (.jsm/.jtn/.gsm/.gtn) the disc shipped for its own viewer, so they
+    /// are neither displayed nor counted as missing.
+    private var pictures: [Corpus.Media] {
+        media.filter { $0.kind == "image" }
+    }
+
+    private var resolvable: [(Corpus.Media, URL)] {
+        pictures.compactMap { item in
+            guard let url = corpus?.url(for: item) else { return nil }
             return (item, url)
         }
     }
 
-    private var uncopied: [Corpus.Media] {
-        media.filter { item in
-            item.kind != "image" || corpus?.url(for: item) == nil
-        }
+    private var missing: [Corpus.Media] {
+        pictures.filter { corpus?.url(for: $0) == nil }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Media").font(.headline)
-            ForEach(images, id: \.0.id) { item, url in
+            Text(pictures.count == 1 ? "Picture" : "Pictures").font(.headline)
+            ForEach(resolvable, id: \.0.id) { item, url in
                 VStack(alignment: .leading, spacing: 4) {
                     if let image = NSImage(contentsOf: url) {
                         Image(nsImage: image)
@@ -266,6 +271,11 @@ private struct MediaGallery: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .overlay(RoundedRectangle(cornerRadius: 6)
                                 .strokeBorder(.quaternary))
+                    } else {
+                        Label("\(item.relPath) — could not be decoded",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     if !item.caption.isEmpty {
                         Text(item.caption)
@@ -275,9 +285,9 @@ private struct MediaGallery: View {
                     }
                 }
             }
-            if !uncopied.isEmpty {
-                Text("\(uncopied.count) item\(uncopied.count == 1 ? "" : "s") not copied at ingest "
-                     + "(proprietary thumbnails, or ingested without --media-out)")
+            if !missing.isEmpty {
+                Text("\(missing.count) picture\(missing.count == 1 ? "" : "s") not copied — "
+                     + "re-ingest with media enabled to include \(missing.count == 1 ? "it" : "them").")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }

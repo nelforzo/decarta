@@ -39,7 +39,8 @@ struct DecartaApp: App {
         let url = LaunchOptions.resolveCorpus(explicit: options.corpusPath)
         corpusURL = url
         let corpus = url.flatMap { try? Corpus(path: $0) }
-        _state = StateObject(wrappedValue: AppState(corpus: corpus))
+        _state = StateObject(wrappedValue: AppState(corpus: corpus,
+                                                    openSlug: options.openSlug))
     }
 
     var body: some Scene {

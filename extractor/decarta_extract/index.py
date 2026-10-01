@@ -170,7 +170,9 @@ def build(articles: Iterable[Article], db_path: Path, *, source_label: str,
                 ("media_count", str(n_media)),
                 ("xref_count", str(n_xrefs)),
                 ("char_count", str(total_chars)),
-                ("media_root", str(media_root) if media_root is not None else ""),
+                # Absolute: the reader resolves media against this, and a relative path
+                # would only work when the app happened to share the ingest's cwd.
+                ("media_root", str(Path(media_root).resolve()) if media_root is not None else ""),
             ],
         )
         conn.commit()

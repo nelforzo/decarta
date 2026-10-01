@@ -91,7 +91,14 @@ final class Corpus {
         builtAt = meta["built_at"] ?? "unknown"
         tokenizer = meta["tokenizer"] ?? "unicode61"
         if let root = meta["media_root"], !root.isEmpty {
-            mediaRoot = URL(fileURLWithPath: root)
+            // Older corpora may hold a relative path; anchor it to the corpus's own
+            // directory rather than to whatever cwd the app was launched with.
+            if root.hasPrefix("/") {
+                mediaRoot = URL(fileURLWithPath: root)
+            } else {
+                mediaRoot = URL(fileURLWithPath: root,
+                                relativeTo: path.deletingLastPathComponent()).standardizedFileURL
+            }
         }
     }
 
@@ -310,6 +317,19 @@ final class Corpus {
         guard let mediaRoot else { return nil }
         let candidate = mediaRoot.appendingPathComponent(media.relPath)
         return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
+    }
+
+    /// How many picture rows actually resolve to a file — used by `--selftest` to prove
+    /// the media path works, since that is not otherwise covered headlessly.
+    func mediaResolution(sample: Int = 300) throws -> (checked: Int, resolved: Int) {
+        var relPaths: [String] = []
+        try query("SELECT rel_path FROM media WHERE kind = 'image' LIMIT ?",
+                  bind: [String(sample)]) { relPaths.append($0.string(0)) }
+        guard let mediaRoot else { return (relPaths.count, 0) }
+        let resolved = relPaths.count { rel in
+            FileManager.default.fileExists(atPath: mediaRoot.appendingPathComponent(rel).path)
+        }
+        return (relPaths.count, resolved)
     }
 
     /// Every article that cross-references `slug` — the "referenced by" direction.

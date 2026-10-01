@@ -4,6 +4,8 @@ import Foundation
 struct LaunchOptions {
     var corpusPath: URL?
     var selftestPath: String?
+    /// Open straight to an article (its numeric refid) instead of an empty reader.
+    var openSlug: String?
     var showHelp = false
 
     init(arguments: [String] = CommandLine.arguments) {
@@ -14,6 +16,11 @@ struct LaunchOptions {
             case "--corpus", "-c":
                 if index + 1 < arguments.count {
                     corpusPath = URL(fileURLWithPath: arguments[index + 1])
+                    index += 1
+                }
+            case "--open", "-o":
+                if index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") {
+                    openSlug = arguments[index + 1]
                     index += 1
                 }
             case "--selftest":
@@ -36,9 +43,10 @@ struct LaunchOptions {
     static let usage = """
     Decarta — offline reader for the 2003-era encyclopedia corpus.
 
-      Decarta [--corpus <path/to/corpus.db>]
+      Decarta [--corpus <path/to/corpus.db>] [--open <refid>]
       Decarta --selftest [path/to/corpus.db]
 
+    --open takes an article's refid (its slug) and opens straight to it.
     Without --corpus the app looks for build/corpus.db, then
     ~/Library/Application Support/Decarta/corpus.db.
     """
