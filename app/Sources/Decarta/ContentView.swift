@@ -115,7 +115,15 @@ struct ContentView: View {
     private var summaryText: String {
         let shown = state.entries.count
         if !state.activeQuery.isEmpty {
-            return "\(shown) result\(shown == 1 ? "" : "s") for “\(state.activeQuery)”"
+            let query = state.activeQuery
+            if let total = state.searchTotal {
+                if shown < total {
+                    return "\(shown) of \(total) results for “\(query)”"
+                }
+                return "\(total) result\(total == 1 ? "" : "s") for “\(query)”"
+            }
+            // The LIKE path cannot count cheaply; say "or more" rather than invent a number.
+            return "\(shown)+ results for “\(query)”"
         }
         if let category = state.selectedCategory {
             return "\(shown) entries in \(category)"

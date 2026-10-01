@@ -12,11 +12,13 @@ browse axis and for search, article cross-references, and picks its tokenizer pe
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from .normalize import query_terms, split_terms
 from .sources import Article
 
 SCHEMA_VERSION = "2"
@@ -205,28 +207,98 @@ def tokenizer_of(conn: sqlite3.Connection) -> str:
 def search(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[sqlite3.Row]:
     """Full-text search, dispatching on the corpus's tokenizer.
 
-    Trigram corpora cannot serve queries shorter than three characters, so those go to a
-    `LIKE` scan over the base table — measured behaviour, see docs/ARCHITECTURE.md.
+    The query is tried exactly as typed first, and only re-tried NFKC-normalized when that
+    finds nothing. Normalizing up front breaks as much as it fixes: titles on this disc
+    legitimately contain full-width punctuation (`JAL（ジャル）`), so rewriting the query to
+    half-width makes them unfindable — while a half-width or full-width IME artefact
+    matches nothing at all until it is normalized.
+
+    Trigram corpora cannot serve terms shorter than three characters, so those take a
+    two-tier `LIKE` path. See `_fts_search` and `_like_search` for the measured reasons
+    behind each shape.
     """
-    query = query.strip()
-    if not query:
+    raw = split_terms(query)
+    if not raw:
         return []
-    columns = "a.id, a.slug, a.title, a.reading, a.category, a.char_count"
-    if tokenizer_of(conn) == "trigram" and len(query) < MIN_TRIGRAM_CHARS:
-        like = f"%{query}%"
-        return conn.execute(
-            f"""
-            SELECT {columns}, substr(a.body, 1, 120) AS snip
-            FROM articles a
-            WHERE a.title LIKE ? OR a.reading LIKE ? OR a.body LIKE ?
-            ORDER BY length(a.title)
-            LIMIT ?
-            """,
-            (like, like, like, limit),
-        ).fetchall()
+    rows = _search_terms(conn, raw, limit)
+    if rows:
+        return rows
+    normalized = query_terms(query)
+    if normalized == raw:
+        return []
+    return _search_terms(conn, normalized, limit)
+
+
+def _search_terms(conn: sqlite3.Connection, terms: list[str],
+                  limit: int) -> list[sqlite3.Row]:
+    tokenizer = tokenizer_of(conn)
+    if tokenizer == "unicode61" or all(len(t) >= MIN_TRIGRAM_CHARS for t in terms):
+        return _fts_search(conn, terms, tokenizer, limit)
+    return _like_search(conn, terms, limit)
+
+
+def count(conn: sqlite3.Connection, query: str) -> int | None:
+    """Exact number of matches, or None when it is not cheap to know.
+
+    The FTS count is effectively free. The `LIKE` path would need a scan of every column
+    (~80-90 ms measured), so it reports None and the caller says "N+" instead of lying.
+    """
+    raw = split_terms(query)
+    if not raw:
+        return 0
+    total = _count_terms(conn, raw)
+    if total is None or total > 0:
+        return total
+    normalized = query_terms(query)
+    if normalized == raw:
+        return total
+    return _count_terms(conn, normalized)
+
+
+def _count_terms(conn: sqlite3.Connection, terms: list[str]) -> int | None:
+    tokenizer = tokenizer_of(conn)
+    if tokenizer != "unicode61" and any(len(t) < MIN_TRIGRAM_CHARS for t in terms):
+        return None
+    expression = _match_expression(terms, tokenizer)
+    if not expression:
+        return 0
     return conn.execute(
-        f"""
-        SELECT {columns}, snippet(articles_fts, 2, '', '', '…', 18) AS snip,
+        "SELECT COUNT(*) FROM articles_fts WHERE articles_fts MATCH ?", (expression,)
+    ).fetchone()[0]
+
+
+def _phrase(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
+
+
+def _match_expression(terms: list[str], tokenizer: str) -> str:
+    """FTS5 MATCH for the given terms: every term must appear (AND).
+
+    Quoting keeps prose punctuation from becoming FTS syntax. The trailing prefix on the
+    last token is only for the Latin tokenizer, where it makes search feel live while
+    typing; trigram already matches substrings, so a prefix there is meaningless.
+    """
+    if tokenizer == "trigram":
+        return " AND ".join(_phrase(term) for term in terms)
+    tokens: list[str] = []
+    for term in terms:
+        tokens.extend(re.findall(r"[^\W_]+", term, flags=re.UNICODE))
+    if not tokens:
+        return ""
+    parts = [_phrase(token) for token in tokens]
+    parts[-1] += "*"
+    return " ".join(parts)
+
+
+def _fts_search(conn: sqlite3.Connection, terms: list[str], tokenizer: str,
+                limit: int) -> list[sqlite3.Row]:
+    expression = _match_expression(terms, tokenizer)
+    if not expression:
+        return []
+    return conn.execute(
+        """
+        SELECT a.id, a.slug, a.title, a.reading, a.category, a.char_count,
+               snippet(articles_fts, 2, '', '', '…', 18) AS snip,
                bm25(articles_fts, 8.0, 4.0, 1.0) AS score
         FROM articles_fts
         JOIN articles a ON a.id = articles_fts.rowid
@@ -234,17 +306,40 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[sqlite
         ORDER BY score
         LIMIT ?
         """,
-        (fts_match(query), limit),
+        (expression, limit),
     ).fetchall()
 
 
-def fts_match(query: str) -> str:
-    """A forgiving FTS5 MATCH expression: quote the whole query as a phrase.
+def _like_search(conn: sqlite3.Connection, terms: list[str], limit: int) -> list[sqlite3.Row]:
+    """Two-tier `LIKE` for queries the trigram index cannot serve (< 3 characters).
 
-    Users type prose, not FTS operators, so quoting keeps `-`, `"` and `*` from
-    becoming syntax. Works for both tokenizers.
+    Ranking every match by `length(title)` costs a full scan and sort — measured 82-104 ms
+    on this corpus, against 0.2-6 ms unordered. So titles/readings are queried and ranked
+    on their own (few enough rows to sort cheaply and the most relevant ones anyway), and
+    the body only fills the remaining page without ordering.
     """
-    return '"' + query.replace('"', '""') + '"'
+    columns = "a.id, a.slug, a.title, a.reading, a.category, a.char_count"
+    patterns = [f"%{term}%" for term in terms]
+
+    head_predicate = " AND ".join(["(title LIKE ? OR reading LIKE ?)"] * len(terms))
+    head_params = [p for p in patterns for _ in range(2)]
+    rows = conn.execute(
+        f"SELECT {columns}, '' AS snip FROM articles a WHERE {head_predicate}"
+        f" ORDER BY length(title), title LIMIT ?",
+        [*head_params, limit],
+    ).fetchall()
+    if len(rows) >= limit:
+        return rows
+
+    body_predicate = " AND ".join(["(title LIKE ? OR reading LIKE ? OR body LIKE ?)"] * len(terms))
+    body_params = [p for p in patterns for _ in range(3)]
+    seen = {row["id"] for row in rows}
+    extra = conn.execute(
+        f"SELECT {columns}, substr(body, 1, 160) AS snip FROM articles a"
+        f" WHERE {body_predicate} LIMIT ?",
+        [*body_params, limit + len(rows)],
+    ).fetchall()
+    return rows + [row for row in extra if row["id"] not in seen][:limit - len(rows)]
 
 
 def categories(conn: sqlite3.Connection) -> list[sqlite3.Row]:

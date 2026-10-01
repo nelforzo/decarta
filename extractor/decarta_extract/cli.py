@@ -72,8 +72,13 @@ def _cmd_query(args: argparse.Namespace) -> int:
     try:
         rows = index.search(conn, args.text, limit=args.limit)
         if not rows:
-            print("no matches")
+            print(f"no matches for {args.text!r}")
             return 1
+        total = index.count(conn, args.text)
+        if total is None:
+            print(f"{len(rows)} results (or more) for {args.text!r}\n")
+        else:
+            print(f"{len(rows)} of {total} results for {args.text!r}\n")
         for row in rows:
             reading = row["reading"]
             heading = f"{row['title']}" + (f"（{reading}）" if reading else "")

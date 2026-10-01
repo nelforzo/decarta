@@ -191,25 +191,75 @@ final class Corpus {
         return out
     }
 
+    /// Search results plus the exact number of matches when it is cheap to know.
+    ///
+    /// `total` is nil on the `LIKE` path, where counting means scanning every column
+    /// (~80-90 ms measured); the caller says "N+" rather than reporting a wrong number.
+    struct SearchResults {
+        let entries: [Entry]
+        let total: Int?
+    }
+
     /// Full-text search, dispatching on the corpus's tokenizer.
     ///
-    /// `trigram` cannot serve queries shorter than three characters, so those take a
-    /// `LIKE` scan over the base table (measured: 二文字 queries like 火山 return 0 under
-    /// FTS but match here). Anything that still trips the FTS parser also degrades to
-    /// the `LIKE` path rather than surfacing an error.
-    func search(_ text: String, limit: Int = 60) throws -> [Entry] {
-        let query0 = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query0.isEmpty else { return [] }
-        if tokenizer == "trigram", query0.count < Self.shortQueryLength {
-            return try likeSearch(query0, limit: limit)
+    /// The query is NFKC-normalized and split into terms first: IMEs hand over full-width
+    /// Latin and half-width katakana that never match the indexed text (measured `ＦＵＪＩ`
+    /// 0 hits as typed, 5 once normalized), and a multi-word query should AND its terms
+    /// rather than demand one exact phrase (`自由 女神` was 0 hits, now 28).
+    ///
+    /// `trigram` cannot serve terms shorter than three characters, so a query containing
+    /// one takes the `LIKE` path. Anything that still trips the FTS parser also degrades
+    /// to `LIKE` rather than surfacing an error.
+    func search(_ text: String, limit: Int = 300) throws -> SearchResults {
+        let raw = Self.splitTerms(text)
+        guard !raw.isEmpty else { return SearchResults(entries: [], total: 0) }
+        let typed = try search(terms: raw, limit: limit)
+        if !typed.entries.isEmpty { return typed }
+        // Only rewrite the query if it matched nothing as typed.
+        let normalized = Self.queryTerms(text)
+        if normalized == raw { return typed }
+        return try search(terms: normalized, limit: limit)
+    }
+
+    private func search(terms: [String], limit: Int) throws -> SearchResults {
+        if tokenizer == "trigram", terms.contains(where: { $0.count < Self.shortQueryLength }) {
+            return try likeSearch(terms, limit: limit)
         }
         do {
-            let match = matchExpression(for: query0)
-            guard !match.isEmpty else { return [] }
-            return try ftsSearch(match, limit: limit)
+            let match = matchExpression(for: terms)
+            guard !match.isEmpty else { return SearchResults(entries: [], total: 0) }
+            return SearchResults(entries: try ftsSearch(match, limit: limit),
+                                 total: try ftsCount(match))
         } catch {
-            return try likeSearch(query0, limit: limit)
+            return try likeSearch(terms, limit: limit)
         }
+    }
+
+    /// Exact match count — a plain COUNT over the FTS index, which is effectively free.
+    func searchCount(_ text: String) throws -> Int? {
+        let raw = Self.splitTerms(text)
+        guard !raw.isEmpty else { return 0 }
+        let typed = try count(terms: raw)
+        if typed == nil || (typed ?? 0) > 0 { return typed }
+        let normalized = Self.queryTerms(text)
+        if normalized == raw { return typed }
+        return try count(terms: normalized)
+    }
+
+    private func count(terms: [String]) throws -> Int? {
+        if tokenizer == "trigram", terms.contains(where: { $0.count < Self.shortQueryLength }) {
+            return nil
+        }
+        let match = matchExpression(for: terms)
+        guard !match.isEmpty else { return 0 }
+        return try ftsCount(match)
+    }
+
+    private func ftsCount(_ match: String) throws -> Int {
+        var count = 0
+        try query("SELECT COUNT(*) FROM articles_fts WHERE articles_fts MATCH ?",
+                  bind: [match]) { count = Int($0.int(0)) }
+        return count
     }
 
     private func ftsSearch(_ match: String, limit: Int) throws -> [Entry] {
@@ -230,51 +280,106 @@ final class Corpus {
         return out
     }
 
-    private func likeSearch(_ text: String, limit: Int) throws -> [Entry] {
-        let escaped = text
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "%", with: "\\%")
-            .replacingOccurrences(of: "_", with: "\\_")
-        let pattern = "%\(escaped)%"
+    /// Two-tier `LIKE` for queries the trigram index cannot serve.
+    ///
+    /// Ranking every match by `length(title)` forces a scan and sort of the whole corpus
+    /// (measured 82-104 ms). Titles and readings are instead queried and ranked on their
+    /// own — few rows, and the most relevant ones anyway — and the body only fills the
+    /// remaining page, unordered.
+    private func likeSearch(_ terms: [String], limit: Int) throws -> SearchResults {
+        let patterns = terms.map { "%\(Self.escapeLike($0))%" }
+
+        var headBind: [String] = []
+        for pattern in patterns { headBind.append(pattern); headBind.append(pattern) }
+        let headPredicate = Array(repeating: "(a.title LIKE ? ESCAPE '\\' OR a.reading LIKE ? ESCAPE '\\')",
+                                  count: terms.count).joined(separator: " AND ")
+
         var out: [Entry] = []
         try query("""
             SELECT a.id, a.slug, a.title, a.reading, a.category, a.char_count,
                    substr(a.body, 1, 160)
             FROM articles a
-            WHERE a.title LIKE ? ESCAPE '\\' OR a.reading LIKE ? ESCAPE '\\'
-               OR a.body LIKE ? ESCAPE '\\'
+            WHERE \(headPredicate)
             ORDER BY length(a.title), a.title COLLATE NOCASE
             LIMIT ?
-            """, bind: [pattern, pattern, pattern, String(limit)]) { row in
+            """, bind: headBind + [String(limit)]) { row in
             out.append(Entry(id: row.int(0), slug: row.string(1), title: row.string(2),
                              reading: row.string(3), category: row.string(4),
                              charCount: Int(row.int(5)), snippet: row.string(6)))
         }
-        return out
+        if out.count >= limit { return SearchResults(entries: out, total: nil) }
+
+        var bodyBind: [String] = []
+        for pattern in patterns {
+            bodyBind.append(pattern); bodyBind.append(pattern); bodyBind.append(pattern)
+        }
+        let bodyPredicate = Array(repeating: "(a.title LIKE ? ESCAPE '\\' OR a.reading LIKE ? ESCAPE '\\' OR a.body LIKE ? ESCAPE '\\')",
+                                  count: terms.count).joined(separator: " AND ")
+        let seen = Set(out.map(\.id))
+        var extra: [Entry] = []
+        try query("""
+            SELECT a.id, a.slug, a.title, a.reading, a.category, a.char_count,
+                   substr(a.body, 1, 160)
+            FROM articles a
+            WHERE \(bodyPredicate)
+            LIMIT ?
+            """, bind: bodyBind + [String(limit + out.count)]) { row in
+            extra.append(Entry(id: row.int(0), slug: row.string(1), title: row.string(2),
+                               reading: row.string(3), category: row.string(4),
+                               charCount: Int(row.int(5)), snippet: row.string(6)))
+        }
+        out.append(contentsOf: extra.filter { !seen.contains($0.id) })
+        return SearchResults(entries: Array(out.prefix(limit)), total: nil)
     }
 
-    /// FTS5 MATCH expression for this corpus's tokenizer.
+    static func escapeLike(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+    }
+
+    /// Split a query on whitespace, leaving the text exactly as typed.
+    static func splitTerms(_ text: String) -> [String] {
+        text.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    /// NFKC-normalize the query and split it on whitespace into terms.
     ///
-    /// Trigram corpora take the whole query as one quoted phrase (a substring match,
-    /// which is how CJK is actually searched). Latin corpora keep per-token AND matching
-    /// with a prefix on the last token, so search feels live while typing. Quoting either
-    /// way keeps `don't`, `co-op` and stray `*` from becoming syntax.
-    func matchExpression(for text: String) -> String {
-        tokenizer == "trigram" ? Self.phraseMatch(from: text) : Self.latinMatch(from: text)
+    /// The extra NFC pass matters: `precomposedStringWithCompatibilityMapping` decomposes
+    /// half-width kana to a full-width base plus a combining mark but does not compose it
+    /// back, so `ﾌｼﾞ` became U+30D5 U+30B7 U+3099 where Python's NFKC (which built the
+    /// corpus) stores U+30D5 U+30B8 — the two never compare equal.
+    static func queryTerms(_ text: String) -> [String] {
+        text.precomposedStringWithCompatibilityMapping
+            .precomposedStringWithCanonicalMapping
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
     }
 
-    static func phraseMatch(from text: String) -> String {
-        "\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-    }
-
-    static func latinMatch(from text: String) -> String {
-        let tokens = text
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
+    /// FTS5 MATCH expression: every term must appear.
+    ///
+    /// Trigram corpora quote each term as a phrase (a substring match, which is how CJK
+    /// is actually searched). Latin corpora keep per-token matching with a prefix on the
+    /// last token, so search feels live while typing. Quoting either way keeps `don't`,
+    /// `co-op` and stray `*` from becoming syntax.
+    func matchExpression(for terms: [String]) -> String {
+        if tokenizer == "trigram" {
+            return terms.map(Self.phrase).joined(separator: " AND ")
+        }
+        var tokens: [String] = []
+        for term in terms {
+            tokens.append(contentsOf: term
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty })
+        }
         guard !tokens.isEmpty else { return "" }
-        return tokens.enumerated().map { index, token in
-            index == tokens.count - 1 ? "\"\(token)\"*" : "\"\(token)\""
-        }.joined(separator: " ")
+        var parts = tokens.map(Self.phrase)
+        parts[parts.count - 1] += "*"
+        return parts.joined(separator: " ")
+    }
+
+    static func phrase(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     func article(slug: String) throws -> Article? {

@@ -187,6 +187,21 @@ def aicu_bucket(*candidates: str) -> str:
     return deferred or "その他"
 
 
+def split_terms(text: str) -> list[str]:
+    """Split a query on whitespace, leaving the text exactly as typed."""
+    return text.split()
+
+
+def query_terms(text: str) -> list[str]:
+    """Split a user query into NFKC-normalized terms.
+
+    IMEs hand over full-width Latin and half-width katakana that never match the text we
+    indexed. Measured on the corpus: `ＦＵＪＩ` matched 0 articles as typed and 5 once
+    normalized; half-width `ﾌｼﾞ` went from 0 to 126.
+    """
+    return unicodedata.normalize("NFKC", text).split()
+
+
 def reading_from(title: str, jtitle: str) -> str:
     """The disc's reading field, minus the leading repeat of the display title."""
     text = unicodedata.normalize("NFKC", jtitle or "").strip()

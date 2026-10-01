@@ -32,6 +32,8 @@ final class AppState: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var activeQuery = ""
     @Published private(set) var isSearching = false
+    /// Exact match count for the active query, when the corpus can cheaply provide one.
+    @Published private(set) var searchTotal: Int?
 
     /// The full result of the current browse/search, and the window shown so far. A
     /// 39,000-entry corpus is loaded a page at a time: handing the whole array to a
@@ -91,9 +93,14 @@ final class AppState: ObservableObject {
         do {
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             activeQuery = query
-            allEntries = query.isEmpty
-                ? try corpus.entries(inCategory: selectedCategory)
-                : try corpus.search(query)
+            if query.isEmpty {
+                allEntries = try corpus.entries(inCategory: selectedCategory)
+                searchTotal = nil
+            } else {
+                let results = try corpus.search(query)
+                allEntries = results.entries
+                searchTotal = results.total
+            }
             entries = Array(allEntries.prefix(Self.pageSize))
             categories = CategoryOrder.sorted(try corpus.categories())
             total = try corpus.totalArticles()

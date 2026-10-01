@@ -11,14 +11,17 @@ enum Selftest {
             if !condition { failures.append(label) }
         }
 
-        // Escaping must survive prose that would otherwise be an FTS syntax error.
-        check("phrase match quotes whole query",
-              Corpus.phraseMatch(from: "don't co-op *") == "\"don't co-op *\"",
-              Corpus.phraseMatch(from: "don't co-op *"))
-        check("latin match tokenizes and prefixes last",
-              Corpus.latinMatch(from: "don't co-op *") == "\"don\" \"t\" \"co\" \"op\"*",
-              Corpus.latinMatch(from: "don't co-op *"))
-        check("latin match empty on punctuation", Corpus.latinMatch(from: "  !!! ") == "")
+        // Query handling must survive IME output and prose punctuation.
+        // Scalars spelled out so this cannot be fooled by how the editor stored the literal.
+        let precomposedFuji = "\u{30D5}\u{30B8}"  // フジ
+        check("queryTerms normalizes full-width and half-width",
+              Corpus.queryTerms("ＦＵＪＩ ﾌｼﾞ") == ["FUJI", precomposedFuji],
+              Corpus.queryTerms("ＦＵＪＩ ﾌｼﾞ").joined(separator: ","))
+        check("queryTerms splits on whitespace",
+              Corpus.queryTerms("自由  女神") == ["自由", "女神"])
+        check("queryTerms empty on blank input", Corpus.queryTerms("   ").isEmpty)
+        check("phrase escapes quotes",
+              Corpus.phrase("a\"b") == "\"a\"\"b\"", Corpus.phrase("a\"b"))
 
         guard let url = LaunchOptions.resolveCorpus(explicit: corpusPath) else {
             print("FAIL  corpus located: none found (build one with `make ingest`)")
@@ -52,8 +55,8 @@ enum Selftest {
                       "\(first.title): \(article?.body.count ?? 0) chars")
                 let term = first.title.split(separator: " ").first.map(String.init) ?? first.title
                 let hits = try corpus.search(term)
-                check("search finds entry", hits.contains { $0.slug == first.slug },
-                      "\(hits.count) hits for \(term)")
+                check("search finds entry", hits.entries.contains { $0.slug == first.slug },
+                      "\(hits.entries.count) hits for \(term)")
                 check("chars match body", article?.entry.charCount == first.charCount,
                       "\(first.charCount)")
             }
@@ -69,13 +72,32 @@ enum Selftest {
                 let shortQueries = ["火山", "栄養", "日本"]
                 var best = 0
                 for query in shortQueries {
-                    best = max(best, try corpus.search(query).count)
+                    best = max(best, try corpus.search(query).entries.count)
                 }
                 check("short CJK query hits (LIKE fallback)", best > 0,
                       "best \(best) hits among \(shortQueries.joined(separator: ", "))")
 
                 let long = "自由の女神"
-                check("CJK phrase query hits", try corpus.search(long).count > 0, long)
+                let longHits = try corpus.search(long)
+                check("CJK phrase query hits", longHits.entries.count > 0, long)
+                // The FTS path must report the real total, not the page size.
+                check("exact count reported",
+                      longHits.total != nil && longHits.total! >= longHits.entries.count,
+                      "total \(longHits.total.map(String.init) ?? "nil")")
+
+                // Multi-term queries AND their terms instead of demanding one phrase.
+                check("multi-term query hits", try corpus.search("自由 女神").entries.count > 0,
+                      "自由 女神")
+                // An IME artefact must land on the same articles as its normalized form.
+                let halfWidth = try corpus.search("ﾌｼﾞ").entries.count
+                let fullWidth = try corpus.search(precomposedFuji).entries.count
+                check("half-width kana normalizes", halfWidth == fullWidth && fullWidth > 0,
+                      "half=\(halfWidth) full=\(fullWidth)")
+                let wideLatin = try corpus.search("ＦＵＪＩ").entries.count
+                check("full-width Latin normalizes", wideLatin > 0, "ＦＵＪＩ -> \(wideLatin)")
+                // A title containing full-width punctuation must stay findable as typed.
+                check("query as typed is not rewritten", try corpus.search("JAL（ジャル）").entries.count > 0,
+                      "JAL（ジャル）")
             }
 
             // Cross-references and their reverse direction.

@@ -73,16 +73,42 @@ So `index.py` builds the FTS table with `tokenize=trigram` for the disc and
 `tokenize=unicode61 remove_diacritics 2` for the Latin fixture (`--tokenizer auto` picks
 by adapter; the value is stored in `meta.tokenizer`). `index.search` dispatches on it:
 
-- trigram corpus, query < 3 characters → `LIKE '%…%'` scan over `articles`
-  (`火山`, `栄養` matched this way; they returned nothing under the old path).
-- trigram corpus, query ≥ 3 characters → FTS5 `MATCH` of the whole query as one quoted
-  phrase, i.e. a substring match (`自由の女神` → the 自由の女神像 article, first hit).
-- `unicode61` corpus → per-token `MATCH`, quoting each token so prose punctuation cannot
-  become FTS syntax, with a prefix on the last token so search feels live while typing.
+- **Terms.** The query is split on whitespace and every term must match (AND). It is
+  tried exactly as typed first and only re-tried NFKC-normalized if that finds nothing.
+  Measured: a multi-word query matches 28 articles where the old whole-query-as-one-phrase
+  form matched 0 (`自由 女神`), and normalizing *only* on the second attempt is what keeps
+  a title with full-width punctuation findable (`JAL（ジャル）`) while still resolving IME
+  artefacts (`ＦＵＪＩ` 0 → 5 hits, half-width `ﾌｼﾞ` 0 → 126).
+- **trigram, all terms ≥ 3 characters** → FTS5 `MATCH` of each term as a quoted phrase
+  joined with `AND` (a substring match, which is how CJK is searched), ranked by bm25.
+  Sub-millisecond; even a 7,302-hit term ranks in 22 ms.
+- **trigram, any term < 3 characters** → the `LIKE` path. `火山` matches 797 articles and
+  `日本` 11,334, so ranking all of them by `length(title)` cost **82-104 ms**. Instead
+  titles/readings are queried and ranked on their own — few rows, and the most relevant
+  ones anyway — and the body only fills the rest of the page unordered: **30-75 ms for a
+  page of 300**, where the old shape spent ~100 ms on a page of 60.
+- **`unicode61` corpus** → per-token `MATCH`, quoting each token so prose punctuation
+  cannot become FTS syntax, with a prefix on the last token so search feels live while
+  typing (there is no trigram substring path to make that unnecessary).
 
 Ranking is bm25 with a title boost (8.0 title, 4.0 reading, 1.0 body); snippets come from
-`snippet()`. `verify` round-trips a title term *and*, for trigram corpora, a real
-two-character query, so both paths are exercised rather than just counted.
+`snippet()`, and the `LIKE` path falls back to the first 160 characters of the body.
+
+**Counting.** `index.search` and the reader report the real total where it is cheap: a
+`COUNT` over the FTS index is effectively free, so `セックス` reports 104 instead of the
+page size it used to be silently clamped to (60, labelled as if it were the total). The
+`LIKE` path cannot count without an ~80-90 ms scan, so it says "N+" rather than invent a
+number.
+
+**Cross-language normalization.** `unicode61`-style normalization is *not* portable:
+Swift's `precomposedStringWithCompatibilityMapping` decomposes half-width kana to a
+full-width base plus a combining mark (U+30D5 U+30B7 U+3099 for `ﾌｼﾞ`) and does not compose
+it back, while Python's `NFKC` yields U+30D5 U+30B8 (what the corpus stores). The Swift
+reader applies a canonical-composition pass on top, and `--selftest` asserts that a
+half-width query returns exactly the same hits as its full-width form (126 = 126).
+
+`verify` round-trips a title term *and*, for trigram corpora, a real two-character query,
+so both paths are exercised rather than just counted.
 
 ## What the Japanese data changed in the schema
 
