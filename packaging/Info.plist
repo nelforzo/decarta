@@ -10,6 +10,8 @@
 	<string>com.nelforzo.decarta</string>
 	<key>CFBundleExecutable</key>
 	<string>Decarta</string>
+	<key>CFBundleIconFile</key>
+	<string>Decarta</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>

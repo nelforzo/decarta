@@ -78,13 +78,23 @@ build/Decarta.app/Contents/
   Info.plist                 # version from `git describe`, bundle id com.nelforzo.decarta
   Resources/corpus.db        # the whole corpus (SQLite + FTS5)
   Resources/media/baggage/   # the pictures the corpus references
+  Resources/Decarta.icns     # the icon (regenerate with packaging/make-icon.py)
 ```
+
+The corpus is written into the bundle with `VACUUM INTO` and left in rollback-journal
+mode rather than WAL. A WAL-mode database makes the reader create `-shm`/`-wal` sidecars
+beside it on first open, which would litter `Resources/` and break the code signature of
+a bundle that is meant to be read-only.
 
 The bundle is self-contained and location-independent: the corpus records an absolute
 `media_root` from the machine that built it, so the reader prefers that path only if it
 still exists and otherwise falls back to `media/` beside `corpus.db`. It is ad-hoc signed
 (`codesign --sign -`), which is enough to launch locally and to keep the app's identity
 when it is moved, without pretending to be a notarised distribution.
+
+The icon is a 5x7 pixel-font `d` on a white rounded square, drawn as literal squares so
+the letter stays hard-edged; only the rounded background is supersampled. `make-icon.py`
+regenerates `Decarta.icns` if the design changes — it is not needed for a normal build.
 
 ```sh
 SKIP_INGEST=1 ./scripts/build-app.sh   # repackage from an existing corpus.db in seconds

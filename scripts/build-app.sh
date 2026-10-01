@@ -56,9 +56,23 @@ mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp "$BIN" "$OUT/Contents/MacOS/$APP_NAME"
 cp packaging/Info.plist "$OUT/Contents/Info.plist"
 
+# Icon: committed as a .icns; regenerate the design with packaging/make-icon.py.
+[ -f packaging/Decarta.icns ] || die "missing packaging/Decarta.icns (run packaging/make-icon.py)"
+cp packaging/Decarta.icns "$OUT/Contents/Resources/$APP_NAME.icns"
+
 # The reader looks for corpus.db in its Resources and for a media/ directory beside it,
 # so this layout is what makes the bundle self-contained.
-cp "$CORPUS" "$OUT/Contents/Resources/corpus.db"
+#
+# The corpus is written out with VACUUM INTO and left in rollback-journal mode, so it is a
+# single self-contained file: a WAL-mode database would make the reader create -shm/-wal
+# sidecars inside the app bundle on first read, which both litters Resources and breaks
+# the code signature.
+CORPUS_TARGET="$OUT/Contents/Resources/corpus.db"
+sqlite3 "$CORPUS" "VACUUM INTO '$CORPUS_TARGET'"
+sqlite3 "$CORPUS_TARGET" "PRAGMA journal_mode=DELETE;"
+rm -f "$CORPUS_TARGET-wal" "$CORPUS_TARGET-shm"
+log "corpus written ($(du -h "$CORPUS_TARGET" | cut -f1), rollback journal)"
+
 log "copying pictures"
 ditto "$MEDIA_OUT" "$OUT/Contents/Resources/media"
 
@@ -69,21 +83,29 @@ BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" \
     "$OUT/Contents/Info.plist"
 
+# ------------------------------------------------------------------ 4. sanity check
+# Everything that inspects the bundle happens *before* signing: opening the corpus even
+# read-only must not be able to add files to a bundle that has already been sealed.
+PICTURES="$(find "$OUT/Contents/Resources/media" -type f | wc -l | tr -d ' ')"
+ARTICLES="$(sqlite3 "file:$CORPUS_TARGET?mode=ro" "SELECT COUNT(*) FROM articles;")"
+[ -f "$OUT/Contents/Resources/$APP_NAME.icns" ] || die "icon missing from the bundle"
+if [ -e "$CORPUS_TARGET-wal" ] || [ -e "$CORPUS_TARGET-shm" ]; then
+    die "reading the corpus created sidecar files — the bundle would be modified at runtime"
+fi
+
+# -------------------------------------------------------------------- 5. sign last
 # Ad-hoc signature: enough for local launch and for the app to keep its identity if it is
 # moved, without pretending to be a signed distribution.
 if codesign --force --sign - "$OUT" >/dev/null 2>&1; then
-    log "ad-hoc signed"
+    if codesign --verify --deep "$OUT" >/dev/null 2>&1; then
+        log "ad-hoc signed and verified"
+    else
+        log "warning: signature did not verify"
+    fi
 else
     log "codesign unavailable — continuing unsigned"
 fi
 
-# ------------------------------------------------------------------ 4. sanity check
-if ! codesign --verify --deep "$OUT" >/dev/null 2>&1; then
-    log "warning: signature did not verify (the app still runs locally)"
-fi
-PICTURES="$(find "$OUT/Contents/Resources/media" -type f | wc -l | tr -d ' ')"
-ARTICLES="$("$PYTHON" -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('select count(*) from articles').fetchone()[0])" \
-    "$OUT/Contents/Resources/corpus.db")"
 SIZE="$(du -sh "$OUT" | cut -f1)"
 
 echo
