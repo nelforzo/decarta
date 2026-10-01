@@ -14,12 +14,17 @@ struct ContentView: View {
         } detail: {
             detail
         }
-        .searchable(text: $state.searchText, placement: .sidebar,
+        // `.toolbar` rather than `.sidebar`: a sidebar-placed search field reserves its own
+        // band at the top of the sidebar, which puts the sidebar's content boundary 1 pt
+        // below the other columns' — the visible jog along the top bar. Placing the field
+        // in the toolbar keeps all three columns flush at the toolbar's bottom edge.
+        .searchable(text: $state.searchText, placement: .toolbar,
                     prompt: "Search \(state.total) articles")
         .frame(minWidth: 940, minHeight: 580)
-        // The corpus summary lives in the window subtitle rather than in a strip above
-        // the list, so the content column stays flush with the sidebar.
-        .navigationSubtitle(state.statusLine)
+        // Deliberately no `.navigationSubtitle` and no `.principal` toolbar item: both
+        // change the titlebar/toolbar metrics, which shows up as a small jog along the
+        // top bar where the sidebar meets it. The corpus summary lives in the sidebar
+        // footer instead, and the search summary in the `.status` slot.
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
@@ -31,7 +36,7 @@ struct ContentView: View {
                 .keyboardShortcut("[", modifiers: .command)
                 .help("Back to the previous article")
             }
-            ToolbarItem(placement: .principal) {
+            ToolbarItem(placement: .status) {
                 HStack(spacing: 6) {
                     if state.isSearching {
                         ProgressView().controlSize(.small)
@@ -41,6 +46,9 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                // Fixed height: the item must not resize when the spinner comes and goes,
+                // or the top bar shifts by a pixel or two while typing.
+                .frame(height: 18)
             }
         }
     }
@@ -62,6 +70,16 @@ struct ContentView: View {
         .listStyle(.sidebar)
         .onChange(of: state.selectedCategory) { _ in
             DispatchQueue.main.async { state.categoryChanged() }
+        }
+        // Corpus facts as a footer, keeping the toolbar's own metrics untouched.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Text(state.statusLine)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
         }
     }
 
