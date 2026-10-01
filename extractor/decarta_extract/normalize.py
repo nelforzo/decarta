@@ -121,6 +121,84 @@ def word_count(text: str) -> int:
     return len(text.split())
 
 
+def char_count(text: str) -> int:
+    """Characters excluding whitespace.
+
+    Whitespace token counts are meaningless for CJK (a whole article is a handful of
+    "words"), so the corpus stores this instead — see docs/ARCHITECTURE.md.
+    """
+    return sum(1 for ch in text if not ch.isspace())
+
+
+# 五十音 rows, hiragana. Voiced kana decompose via NFKD into a base kana + mark, so
+# they land in their row automatically (が -> か, ぱ -> は).
+_AICU_ROWS: list[tuple[str, str]] = [
+    ("あ行", "あいうえおぁぃぅぇぉ"),
+    ("か行", "かきくけこゕゖ"),
+    ("さ行", "さしすせそ"),
+    ("た行", "たちつてとっ"),
+    ("な行", "なにぬねの"),
+    ("は行", "はひふへほ"),
+    ("ま行", "まみむめも"),
+    ("や行", "やゆよゃゅょ"),
+    ("ら行", "らりるれろ"),
+    ("わ行", "わをんゎゐゑ"),
+]
+_ROW_OF = {ch: row for row, chars in _AICU_ROWS for ch in chars}
+
+
+def _kana_row(ch: str) -> str | None:
+    base = unicodedata.normalize("NFKD", ch)[0]
+    code = ord(base)
+    if 0x30A1 <= code <= 0x30F6:  # katakana -> hiragana
+        code -= 0x60
+    return _ROW_OF.get(chr(code))
+
+
+def aicu_bucket(*candidates: str) -> str:
+    """五十音 browse bucket from a reading/title.
+
+    Articles on this disc carry no taxonomy, so the browse axis is derived from the kana
+    reading (`<jtitle>`). That field starts with the *display* title, so the kana usually
+    sits after it: prefer a leading kana or an ASCII/digit head, and otherwise fall
+    through to the first kana anywhere in the string (the reading).
+    """
+    deferred: str | None = None
+    for text in candidates:
+        if not text:
+            continue
+        chars = [ch for ch in text.strip() if not ch.isspace()]
+        if not chars:
+            continue
+        head = unicodedata.normalize("NFKD", chars[0])[0]
+        row = _kana_row(chars[0])
+        if row:
+            return row
+        if head.isascii() and head.isalpha():
+            return "A–Z"
+        if head.isdigit():
+            return "0–9"
+        if deferred is None:
+            for ch in chars[1:]:
+                row = _kana_row(ch)
+                if row:
+                    deferred = row
+                    break
+    return deferred or "その他"
+
+
+def reading_from(title: str, jtitle: str) -> str:
+    """The disc's reading field, minus the leading repeat of the display title."""
+    text = unicodedata.normalize("NFKC", jtitle or "").strip()
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    flat_title = " ".join(unicodedata.normalize("NFKC", title or "").split())
+    if flat_title and text.startswith(flat_title):
+        text = text[len(flat_title):].strip()
+    return text
+
+
 def snip(text: str, words: int = 24) -> str:
     """Short preview line for CLI listings."""
     flat = _WS.sub(" ", text.replace("\n", " ")).strip()

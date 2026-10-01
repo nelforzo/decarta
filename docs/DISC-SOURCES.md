@@ -100,38 +100,84 @@ An adapter must be pure and deterministic: same disc, same corpus. It must not w
 into the source tree (media is copied out to `--media-out`, never modified in place).
 Mounts are read-only, and nothing extracted is committed.
 
-## `encarta-its` — design, now that the format is known
+## `encarta-its` — implemented, and what it cost
 
-1. **Open the containers.** Verified route: shell out to `7zz` (LGPL, already present on
-   this machine, opens `.ITS` directly as `Hxs`). `list_tsv = 7zz l -slt` for the member
-   inventory; `7zz x -o<scratch>` for extraction — either into a scratch dir the adapter
-   reads, or streamed member by member with `-so`. A pure-Python ITSS+LZX reader
-   (`itss.py`) is optional, ~600–900 lines, and only worth it if we want zero external
-   dependencies.
-2. **Catalog pass.** `EE/ENCARTA/DATASTD.ITS` → `data/<refid>.xml`; keep
-   `group="article"` records, read `<title>` and `<jtitle>`.
-3. **Body pass.** `CONTENT/CONTSTD.ITS` → `content/<refid>.xml`; flatten `<pkey>`
-   paragraphs to text, keep `<section>`/`<sectiontitle>` structure and `<xref>`
-   targets. Then merge other-SKU containers (`CONTDLX`, `CONTEWA`) for anything the
-   Standard catalog references and the Standard container lacks.
-4. **Media pass.** Build one member index over MED/PICON/THUMB/SW containers plus
-   `CATALOG.STE`, resolve `msencdata::baggage/<member>`, copy to `--media-out`, and
-   attach to articles via the `<assoc group="article">` links in the metadata records.
-   Convert what we can (`.jpg`/`.gif`/`.wav`/`.wma`); leave proprietary thumbnails
-   (`.jsm`/`.jtn`/`.gsm`/`.gtn`) referenced but unconverted in v1.
-5. **Text handling.** Bodies are already UTF-8, so `sources._decode` needs no CP932
-   path for this disc — but keep the never-raise behaviour for other containers.
-   Japanese titles/`jtitle` drive a stable slug: use the numeric `refid` (already
-   ASCII), so no transliteration is needed.
-6. **Schema/UI follow-ups this data forces.** Character counts instead of
-   whitespace `word_count`; the trigram + `LIKE` search path (below); a category
-   derived from `jtitle` (五十音 bucket) since articles carry no taxonomy of their own.
+The adapter lives in `extractor/decarta_extract/encarta.py` and is wired into the CLI as
+`--adapter encarta-its` (`make ingest-disc`). What it does, in the order it runs:
+
+1. **Open the containers.** Shells out to `7zz` (LGPL, present on this machine, opens
+   `.ITS` directly as `Hxs`). `7zz l -slt` enumerates members; `7zz x` decodes into a
+   scratch tree (`build/its-scratch/<container>`, reused across runs so the 1.4 GB of
+   containers is decoded once, not per ingest). A pure-Python ITSS+LZX reader remains
+   optional and unwritten — the external dependency is 7-Zip and nothing else.
+2. **Catalog pass.** `EE/ENCARTA/DATASTD.ITS` → `data/<refid>.xml` (72,696 records);
+   keeps `group="article"`, reads `<title>` and `<jtitle>`, and records the
+   `<forward>`/`<reverse>` `<assoc>` links and the `<files>` asset references.
+3. **Body pass.** `CONTENT/CONTSTD.ITS` → `content/<refid>.xml` (40,323 members), parsed
+   with `xml.etree`: `<pkey>`/`<sectiontitle>`/`<headline>`/`<listitem>` become
+   paragraphs, `<xref>` becomes inline text plus a recorded `RefID`, inline `b/i/sup/sub`
+   survive as text, and `<sec>`/`<inlinebmp>` are dropped.
+4. **Media pass.** The manifest comes from the article record's `<assoc group="media">`
+   links, resolved through the media records' `<files>` children, which name members as
+   `msencdata::baggage/<member>` — and the media containers store exactly `baggage/<member>`.
+   With `--media-out`, referenced `<image>` members are extracted from the container found
+   by one listing pass over `MED*`/`PICON*`/`THUMB*`/`SW*`. ``<ticon>`` is skipped: it is
+   the same generic type icon on every record, not article content. `<picon>`/`<thumb>`
+   are recorded as `thumbnail` (proprietary `.jsm`/`.jtn`/`.gsm`/`.gtn`) and not converted.
+5. **Text handling.** Bodies are UTF-8, so no CP932 path is needed here; `_decode`'s
+   never-raise behaviour is retained for other containers. The slug is the numeric
+   `refid`. The reading comes from `<jtitle>` with the leading repeat of the display title
+   stripped (`自由の女神像　じゆうのめがみぞう　Statue of Liberty` → `じゆうのめがみぞう
+   Statue of Liberty`), and the browse category is the 五十音 row of the first kana in it.
+
+Measured on the full disc (`make ingest-disc`, containers already decoded):
+
+```
+39491 articles · 30007400 chars · 55265 media refs · 306408 xrefs
+tokenizer trigram · corpus.db 349 MB · verify: problems []
+selftest (app, headless): OK
+```
+
+Bucket distribution: あ行 5973, か行 7309, さ行 6326, た行 4766, な行 2315, は行 6359,
+ま行 2569, や行 1131, ら行 1871, わ行 274, A–Z 536, 0–9 41, その他 21.
+
+Two corrections to the notes above, found while implementing:
+
+- **`CONTEWA.ITS` is not openable by 7-Zip** (`Cannot open the file as archive`). Since
+  every Standard-catalog article refid already has a body in `CONTSTD.ITS`, the adapter
+  treats the other-SKU containers as optional and skips one it cannot read rather than
+  failing the ingest.
+- **`<title>`, `<jtitle>` and `<caption>` are not plain strings.** They carry inline
+  markup (`<fs>`, `<tbd>`, `<it>`, `<sup>`, `<inf>`, `<break>`), so reading the element's
+  `.text` yields either nothing (when the tag comes first) or a prefix truncated at the
+  first nested tag. Measured on the real catalog: 718 `<title>` elements have empty
+  direct text and 27 more are partially truncated; 120 `<jtitle>` (7 empty, 113
+  truncated); 203 `<caption>` (4 empty, 199 truncated). Symptoms: six articles whose
+  title fell back to their numeric refid (`1161537290` instead of `氐`), and image
+  captions cut mid-title. Parse these fields with a recursive inline-text walk. —
+  `verify` now flags `title = slug` so this cannot ship silently again.
+- The adapter reports 55,265 media refs, which is a different measure from the survey's
+  75,892 above: the survey counted every `<files>` child across all record groups
+  (including each record's generic `<ticon>` type icon), while the adapter counts only
+  content assets (`<image>`, `<thumb>`, `<picon>`) reached from an article's
+  `<assoc group="media">` links. Excluding the `<ticon>` icons alone accounted for ~19.8k
+  of the difference.
+
+Still open (unchanged, and out of scope here): conversion of proprietary thumbnails,
+`.dcr` (dead), audio/video, and rendering fidelity from `ENCXSL.ITS`.
+
+Also open, found while fixing the title parsing: **the disc's media `<caption>` text is
+parsed but discarded.** 15,874 of 17,992 media records carry one — 2,046,514 characters
+of description — while `media.caption` currently holds the record's *title* (the adapter
+uses `title or caption` precedence). Storing both needs a schema addition plus a reader
+change to show the description under the image.
+
 
 ## Generic shapes (context for the adapter interface)
 
 | Shape | Symptoms on disc | Adapter | Status |
 | --- | --- | --- | --- |
-| ITSS container store | `*.ITS` files, `ITOLITLS`/`ITSF` magic, LZX streams | `encarta-its` | **target of this project**; format verified, adapter to write |
+| ITSS container store | `*.ITS` files, `ITOLITLS`/`ITSF` magic, LZX streams | `encarta-its` | **implemented and verified on the Encarta 2003 disc** |
 | HTML tree + images | `*.htm`/`*.html` with a frameset index, `images/` next to them | `generic-html` | implemented (fixture path) |
 | Static HTML + proprietary viewer DB | `.dat`/`.idx`/`.mdb` beside a bundled viewer app | needs reverse engineering | not started |
 | Rich text / Word docs | `.rtf`, `.doc` per entry | `rtf` | planned (extractor can read via macOS `textutil`) |

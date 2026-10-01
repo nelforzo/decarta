@@ -53,48 +53,54 @@ Do not commit the ISO, extracted content, or a built `corpus.db`.
 ```
 extractor/
   decarta_extract/
-    cli.py          # ingest / query / verify / sample commands
-    sources.py      # source adapters (generic-html today; encarta-its is the target)
-    normalize.py    # HTML → text, slugs, category assignment
-    index.py        # SQLite + FTS5 writer, schema, verification
+    cli.py          # sample / ingest / query / show / list / verify commands
+    sources.py      # adapter registry + generic-html (fixture/HTML discs)
+    encarta.py      # encarta-its: the Encarta 2003 disc adapter (ITSS + 7-Zip)
+    normalize.py    # text flattening, slugs, character counts, 五十音 buckets
+    index.py        # SQLite + FTS5 writer (schema v2), tokenizer-aware search
 sample-data/        # tiny hand-written corpus, a pipeline fixture (not the product)
-app/                # SwiftPM package, SwiftUI launcher
+app/                # SwiftPM package, SwiftUI reader
 docs/               # architecture, corpus format, disc-source notes
 ```
 
 ## Quick start
 
 ```sh
-hdiutil attach -readonly -nobrowse encarta2003.iso     # mount the disc read-only
+make                 # sample corpus -> verify -> app build -> headless selftest
 
-make sample      # write the sample-data/ fixture (already committed)
-make ingest      # fixture -> build/corpus.db (SOURCES defaults to sample-data)
-make verify      # integrity, counts, FTS round-trip
-make query Q="volcano"
-make app         # swift build
-make run         # launch the GUI against build/corpus.db
+# The real disc (see below for the mount):
+make mount           # hdiutil attach -readonly -nobrowse -mountpoint /tmp/encarta_mnt
+make ingest-disc     # DISC defaults to /tmp/encarta_mnt; MEDIA=1 also copies images
+make verify
+make list            # 五十音 bucket counts
+make query Q="自由の女神"
+make run
 ```
 
-Ingesting the real disc is the same command with the mount point and the disc's adapter:
+Without a disc, the same commands work against `sample-data/`:
 
 ```sh
-python3 -m decarta_extract ingest /Volumes/L03JXLRD1 --adapter encarta-its \
-    -o build/corpus.db --media-out build/media
+make ingest SOURCES=sample-data ADAPTER=generic-html   # writes build/corpus.db
 ```
 
 ## Status
 
-- Extractor, corpus format and app shell work end to end — but only against the
-  `sample-data/` fixture. That fixture exercises the pipeline; it is not the product.
-- The disc itself is not ingestible yet — but the format is now fully mapped, and the
-  route is verified. `generic-html` finds 35 UI-chrome pages and zero articles here; the
-  payload is 39,491 XML articles inside LZX-compressed `ITSS` containers, and the
-  format has been probed end to end: 7-Zip opens the containers, title metadata joins to
-  bodies by `refid`, and a throwaway adapter built all 40,320 articles into a 208 MB
-  `corpus.db` in 19.8 s with `decarta_extract verify` clean. See `docs/DISC-SOURCES.md`.
-- What is still missing is the real `encarta-its` adapter in `extractor/` (the probe
-  lived in `/tmp`), plus the Japanese search path and character counts the data forces
-  (see `docs/ARCHITECTURE.md`). Media decoding of proprietary thumbnails/audio/video is
-  the long tail.
-- After that: media manifest from the `<assoc>` links, and rendering fidelity based on
-  the XSLT the disc itself ships (`ENCXSL.ITS`).
+- **The disc ingests end to end.** `make ingest-disc` builds a complete corpus from
+  `encarta2003.iso`: **39,491 articles, 30,007,400 characters, 55,265 media references,
+  306,408 article-to-article cross-references**, `verify` clean. Measured 62 s cold
+  (one-time 7-Zip decode of `DATASTD`/`CONTSTD`, ~6 s) and 56 s with the containers
+  already decoded in `build/its-scratch`. `corpus.db` is 349 MB.
+- Corpus schema is **v2**: character counts instead of whitespace `word_count`, the kana
+  reading, article cross-references, and a per-corpus FTS tokenizer. Search is
+  `trigram` for the disc (substring matching, what Japanese users type) with a `LIKE`
+  fallback for two-character queries; `unicode61` is kept for the Latin fixture.
+- Browse axis is a 五十音 bucket derived from the disc's own kana reading
+  (`<jtitle>`); 38,893 of 39,491 articles land in a かな row, 21 in その他.
+- The app reads the corpus read-only and adds cross-reference navigation, "referenced
+  by" backlinks, media with captions, paged entry lists and 五十音 sidebar sections.
+- Media: the manifest is built from the catalog's `<assoc group="media">` links. The
+  `<image>` assets (`.jpg`/`.gif`) can be copied out with `MEDIA=1`; `.jsm`/`.jtn`/`.gsm`/
+  `.gtn` thumbnails and other proprietary formats are referenced but not converted — the
+  documented long tail. Rendering fidelity from the disc's own `ENCXSL.ITS` is untouched.
+  `media.caption` holds the asset's title; the disc's longer descriptive `<caption>` text
+  (2.0M characters) is parsed but not yet stored — see `docs/DISC-SOURCES.md`.

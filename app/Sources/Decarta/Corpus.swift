@@ -1,10 +1,15 @@
 import Foundation
 import SQLite3
 
-/// Read-only reader for a Decarta corpus (`corpus.db`, schema v1).
+/// Read-only reader for a Decarta corpus (`corpus.db`, schema v2).
 ///
 /// The app never writes: the corpus is opened SQLITE_OPEN_READONLY and every query
 /// goes through `query`.
+///
+/// v2 carries what a Japanese corpus needs: character counts (`word_count` was
+/// meaningless), the kana reading, article cross-references, and a `tokenizer` in
+/// `meta` that decides how search runs — `trigram` matches substrings of three or more
+/// characters, and shorter queries take a `LIKE` scan.
 final class Corpus {
     enum CorpusError: Error, LocalizedError {
         case open(String)
@@ -15,7 +20,7 @@ final class Corpus {
             switch self {
             case .open(let detail): return "Could not open corpus: \(detail)"
             case .unsupportedSchema(let version):
-                return "Corpus schema \(version) is not supported by this build (expected 1)."
+                return "Corpus schema \(version) is not supported by this build (expected \(Corpus.schemaVersion))."
             case .query(let detail): return "Query failed: \(detail)"
             }
         }
@@ -25,8 +30,9 @@ final class Corpus {
         let id: Int64
         let slug: String
         let title: String
+        var reading: String = ""
         let category: String
-        let wordCount: Int
+        let charCount: Int
         var snippet: String = ""
     }
 
@@ -34,6 +40,15 @@ final class Corpus {
         let id: Int64
         let kind: String
         let relPath: String
+        let caption: String
+    }
+
+    /// An article-to-article cross-reference, resolved to the target's title.
+    struct Relation: Identifiable, Hashable {
+        var id: String { targetSlug }
+        let targetSlug: String
+        let anchor: String
+        let title: String
     }
 
     struct Article {
@@ -41,14 +56,19 @@ final class Corpus {
         let body: String
         let sourcePath: String
         let media: [Media]
+        let xrefs: [Relation]
     }
 
-    static let schemaVersion = "1"
+    static let schemaVersion = "2"
+    static let shortQueryLength = 3
 
     let path: URL
     private var db: OpaquePointer?
     private(set) var sourceLabel: String = "unknown"
     private(set) var builtAt: String = "unknown"
+    private(set) var tokenizer: String = "unicode61"
+    /// Where referenced media was copied at ingest time, when it was.
+    private(set) var mediaRoot: URL?
 
     init(path: URL) throws {
         self.path = path
@@ -69,6 +89,10 @@ final class Corpus {
         }
         sourceLabel = meta["source_label"] ?? "unknown"
         builtAt = meta["built_at"] ?? "unknown"
+        tokenizer = meta["tokenizer"] ?? "unicode61"
+        if let root = meta["media_root"], !root.isEmpty {
+            mediaRoot = URL(fileURLWithPath: root)
+        }
     }
 
     deinit {
@@ -141,51 +165,102 @@ final class Corpus {
         var bind: [String] = []
         if let category {
             sql = """
-            SELECT id, slug, title, category, word_count FROM articles
-            WHERE category = ? ORDER BY title COLLATE NOCASE
+            SELECT id, slug, title, reading, category, char_count FROM articles
+            WHERE category = ? ORDER BY reading COLLATE NOCASE, title COLLATE NOCASE
             """
             bind = [category]
         } else {
             sql = """
-            SELECT id, slug, title, category, word_count FROM articles
-            ORDER BY title COLLATE NOCASE
+            SELECT id, slug, title, reading, category, char_count FROM articles
+            ORDER BY reading COLLATE NOCASE, title COLLATE NOCASE
             """
         }
         var out: [Entry] = []
         try query(sql, bind: bind) { row in
             out.append(Entry(id: row.int(0), slug: row.string(1), title: row.string(2),
-                             category: row.string(3), wordCount: Int(row.int(4))))
+                             reading: row.string(3), category: row.string(4),
+                             charCount: Int(row.int(5))))
         }
         return out
     }
 
-    /// Full-text search over the FTS5 index, title-weighted, with snippets.
+    /// Full-text search, dispatching on the corpus's tokenizer.
+    ///
+    /// `trigram` cannot serve queries shorter than three characters, so those take a
+    /// `LIKE` scan over the base table (measured: 二文字 queries like 火山 return 0 under
+    /// FTS but match here). Anything that still trips the FTS parser also degrades to
+    /// the `LIKE` path rather than surfacing an error.
     func search(_ text: String, limit: Int = 60) throws -> [Entry] {
-        let match = Self.ftsQuery(from: text)
-        guard !match.isEmpty else { return [] }
+        let query0 = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query0.isEmpty else { return [] }
+        if tokenizer == "trigram", query0.count < Self.shortQueryLength {
+            return try likeSearch(query0, limit: limit)
+        }
+        do {
+            let match = matchExpression(for: query0)
+            guard !match.isEmpty else { return [] }
+            return try ftsSearch(match, limit: limit)
+        } catch {
+            return try likeSearch(query0, limit: limit)
+        }
+    }
+
+    private func ftsSearch(_ match: String, limit: Int) throws -> [Entry] {
         var out: [Entry] = []
         try query("""
-            SELECT a.id, a.slug, a.title, a.category, a.word_count,
-                   snippet(articles_fts, 1, '', '', '…', 14)
+            SELECT a.id, a.slug, a.title, a.reading, a.category, a.char_count,
+                   snippet(articles_fts, 2, '', '', '…', 14)
             FROM articles_fts
             JOIN articles a ON a.id = articles_fts.rowid
             WHERE articles_fts MATCH ?
-            ORDER BY bm25(articles_fts, 8.0, 1.0)
+            ORDER BY bm25(articles_fts, 8.0, 4.0, 1.0)
             LIMIT ?
             """, bind: [match, String(limit)]) { row in
             out.append(Entry(id: row.int(0), slug: row.string(1), title: row.string(2),
-                             category: row.string(3), wordCount: Int(row.int(4)),
-                             snippet: row.string(5)))
+                             reading: row.string(3), category: row.string(4),
+                             charCount: Int(row.int(5)), snippet: row.string(6)))
         }
         return out
     }
 
-    /// Turn free text into a forgiving FTS5 MATCH expression.
+    private func likeSearch(_ text: String, limit: Int) throws -> [Entry] {
+        let escaped = text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        let pattern = "%\(escaped)%"
+        var out: [Entry] = []
+        try query("""
+            SELECT a.id, a.slug, a.title, a.reading, a.category, a.char_count,
+                   substr(a.body, 1, 160)
+            FROM articles a
+            WHERE a.title LIKE ? ESCAPE '\\' OR a.reading LIKE ? ESCAPE '\\'
+               OR a.body LIKE ? ESCAPE '\\'
+            ORDER BY length(a.title), a.title COLLATE NOCASE
+            LIMIT ?
+            """, bind: [pattern, pattern, pattern, String(limit)]) { row in
+            out.append(Entry(id: row.int(0), slug: row.string(1), title: row.string(2),
+                             reading: row.string(3), category: row.string(4),
+                             charCount: Int(row.int(5)), snippet: row.string(6)))
+        }
+        return out
+    }
+
+    /// FTS5 MATCH expression for this corpus's tokenizer.
     ///
-    /// Users type prose, not FTS operators: quote each token so `don't`, `co-op` and
-    /// stray `*` can't produce a syntax error, and prefix-match the last token so
-    /// search feels live while typing.
-    static func ftsQuery(from text: String) -> String {
+    /// Trigram corpora take the whole query as one quoted phrase (a substring match,
+    /// which is how CJK is actually searched). Latin corpora keep per-token AND matching
+    /// with a prefix on the last token, so search feels live while typing. Quoting either
+    /// way keeps `don't`, `co-op` and stray `*` from becoming syntax.
+    func matchExpression(for text: String) -> String {
+        tokenizer == "trigram" ? Self.phraseMatch(from: text) : Self.latinMatch(from: text)
+    }
+
+    static func phraseMatch(from text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+
+    static func latinMatch(from text: String) -> String {
         let tokens = text
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
@@ -200,19 +275,71 @@ final class Corpus {
         var body = ""
         var sourcePath = ""
         try query("""
-            SELECT id, slug, title, category, word_count, body, source_path
+            SELECT id, slug, title, reading, category, char_count, body, source_path
             FROM articles WHERE slug = ? LIMIT 1
             """, bind: [slug]) { row in
             entry = Entry(id: row.int(0), slug: row.string(1), title: row.string(2),
-                          category: row.string(3), wordCount: Int(row.int(4)))
-            body = row.string(5)
-            sourcePath = row.string(6)
+                          reading: row.string(3), category: row.string(4),
+                          charCount: Int(row.int(5)))
+            body = row.string(6)
+            sourcePath = row.string(7)
         }
         guard let entry else { return nil }
         var media: [Media] = []
-        try query("SELECT id, kind, rel_path FROM media WHERE article_id = ?", bind: [String(entry.id)]) {
-            media.append(Media(id: $0.int(0), kind: $0.string(1), relPath: $0.string(2)))
+        try query("SELECT id, kind, rel_path, caption FROM media WHERE article_id = ?",
+                  bind: [String(entry.id)]) {
+            media.append(Media(id: $0.int(0), kind: $0.string(1), relPath: $0.string(2),
+                               caption: $0.string(3)))
         }
-        return Article(entry: entry, body: body, sourcePath: sourcePath, media: media)
+        var xrefs: [Relation] = []
+        try query("""
+            SELECT x.target_slug, x.anchor, COALESCE(a.title, '')
+            FROM xrefs x
+            LEFT JOIN articles a ON a.slug = x.target_slug
+            WHERE x.article_id = ? ORDER BY x.ordinal
+            """, bind: [String(entry.id)]) {
+            xrefs.append(Relation(targetSlug: $0.string(0), anchor: $0.string(1),
+                                  title: $0.string(2)))
+        }
+        return Article(entry: entry, body: body, sourcePath: sourcePath,
+                       media: media, xrefs: xrefs)
+    }
+
+    /// Resolve a media row to a file on disk, when the bytes were copied out.
+    func url(for media: Media) -> URL? {
+        guard let mediaRoot else { return nil }
+        let candidate = mediaRoot.appendingPathComponent(media.relPath)
+        return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
+    }
+
+    /// Every article that cross-references `slug` — the "referenced by" direction.
+    func backlinks(to slug: String, limit: Int = 40) throws -> [Entry] {
+        var out: [Entry] = []
+        try query("""
+            SELECT a.id, a.slug, a.title, a.reading, a.category, a.char_count
+            FROM xrefs x JOIN articles a ON a.id = x.article_id
+            WHERE x.target_slug = ?
+            GROUP BY a.id
+            ORDER BY a.title COLLATE NOCASE
+            LIMIT ?
+            """, bind: [slug, String(limit)]) { row in
+            out.append(Entry(id: row.int(0), slug: row.string(1), title: row.string(2),
+                             reading: row.string(3), category: row.string(4),
+                             charCount: Int(row.int(5))))
+        }
+        return out
+    }
+
+    func entry(slug: String) throws -> Entry? {
+        var found: Entry?
+        try query("""
+            SELECT id, slug, title, reading, category, char_count
+            FROM articles WHERE slug = ? LIMIT 1
+            """, bind: [slug]) { row in
+            found = Entry(id: row.int(0), slug: row.string(1), title: row.string(2),
+                          reading: row.string(3), category: row.string(4),
+                          charCount: Int(row.int(5)))
+        }
+        return found
     }
 }

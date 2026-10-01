@@ -12,36 +12,45 @@ and serve it from a native offline macOS app. The disc is a source, not a depend
    Verified route: `7zz` opens them directly (`7zz l -slt` to enumerate members,
    `7zz x` to extract into a scratch dir), so no decoder has to be written — see
    `docs/DISC-SOURCES.md` for the layout and the measured timings.
-3. **Parse** — the `encarta-its` adapter walks that inner tree and yields normalized
-   `Article` records (`slug`, `title`, `body`, `category`, `source_path`, media refs).
-   Article text, media and catalog indexes come from separate containers
-   (`CONT*` / `CATALOG.STE` vs. `MED*` / `PICON*` / `THUMB*` / `SW*`).
-4. **Normalize** — decoded text (CP932 or UTF-16LE on the Japanese disc; HTML/legacy
-   rich text where applicable) is flattened to plain text with paragraph breaks; slugs
-   are derived from titles and de-duplicated. Japanese titles need a slug strategy that
-   survives non-ASCII (transliteration or stable ids — not a naive ASCII squeeze).
-5. **Index** — records are written into `corpus.db`: an `articles` table, a `media`
-   table keyed by article, and FTS5 virtual tables over title/body.
+3. **Parse** — the `encarta-its` adapter (`extractor/decarta_extract/encarta.py`) walks
+   that inner tree with 7-Zip and yields normalized `Article` records (`slug`, `title`,
+   `reading`, `body`, `category`, `source_path`, media refs, cross-references). Article
+   text, media and catalog indexes come from separate containers (`CONT*` / `CATALOG.STE`
+   vs. `MED*` / `PICON*` / `THUMB*` / `SW*`). The join is the numeric `refid`
+   (`docs/DISC-SOURCES.md`).
+4. **Normalize** — bodies are UTF-8 XML: `<pkey>` paragraphs and `<sectiontitle>` heads
+   are flattened to paragraph-separated text, `<xref>` becomes inline text plus a
+   recorded link target, and inline `b/i/sup/sub/fs` survive as text. The slug is the
+   disc's numeric `refid` (already ASCII and stable), the reading comes from `<jtitle>`,
+   and the browse category is a 五十音 bucket derived from that reading.
+5. **Index** — records are written into `corpus.db`: an `articles` table, `media` keyed by
+   article, `xrefs` for cross-references, and an FTS5 table over title/reading/body.
 6. **Ship/open** — the macOS app opens `corpus.db` read-only (`SQLITE_OPEN_READONLY`,
    `file:...?mode=ro` URI) and never writes to it.
 
 `generic-html` (step 3's other adapter) stays in the tree as a fixture/self-test path
 and for any HTML-shaped disc; it does not fit this disc.
 
-## Corpus schema (v1)
+## Corpus schema (v2)
 
 ```sql
-articles(id INTEGER PK, slug TEXT UNIQUE, title TEXT NOT NULL, body TEXT,
-         category TEXT, source_path TEXT, word_count INTEGER)
-media(id INTEGER PK, article_id INTEGER REFERENCES articles(id),
-      kind TEXT, rel_path TEXT, caption TEXT)
-meta(key TEXT PK, value TEXT)          -- schema_version, source_label, built_at
-articles_fts                           -- fts5(title, body, content='articles',
-                                       --      content_rowid='id', tokenize ...)
+articles(id INTEGER PK, slug TEXT UNIQUE, title TEXT NOT NULL, reading TEXT,
+         body TEXT NOT NULL, category TEXT NOT NULL, source_path TEXT,
+         char_count INTEGER NOT NULL)
+media(id INTEGER PK, article_id → articles(id), kind TEXT, rel_path TEXT, caption TEXT)
+xrefs(id INTEGER PK, article_id → articles(id), target_slug TEXT, anchor TEXT,
+      ordinal INTEGER)
+meta(key TEXT PK, value TEXT)          -- schema_version, tokenizer, source_label,
+                                       -- built_at, *_count, media_root
+articles_fts                           -- fts5(title, reading, body, content='articles',
+                                       --      content_rowid='id', tokenize=<trigram|unicode61>)
 ```
 
 `meta.schema_version` gates compatibility: the app refuses a corpus it does not know
-rather than half-rendering it.
+rather than half-rendering it. `meta.tokenizer` tells both the CLI and the app how to
+search this corpus, so the tokenizer choice travels with the data.
+
+v1 (`word_count`, `unicode61` only) is gone: see below.
 
 ## Search, and why Japanese changes it
 
@@ -52,32 +61,43 @@ Measured on the real extracted corpus (3,000 articles, SQLite 3.54):
   3,000 articles produced 150,099 distinct terms, **41.3 % of them longer than 12
   characters**, with a median term like `第39番札所の延光寺` — a whole clause, not a word.
 - Consequence: a query matches only when it equals an entire punctuation-delimited run.
-  Searching the exact article title `自由の女神` returns **0 hits**; `富士山` returns 6 only
-  because some runs happen to be exactly that, while the 19 tokens that merely *begin*
-  with it are unreachable.
+  Searching the exact article title `自由の女神` returned **0 hits**; `富士山` returned 6 only
+  because some runs happened to be exactly that, while the 19 tokens that merely *begin*
+  with it were unreachable.
 
-`trigram` (SQLite ≥ 3.34, present here) fixes every query of three characters or more —
-`自由の女神` → 1 hit, `富士山` → 21 on the same data — and it also survives mid-word
-substring queries, which is what Japanese users actually type. It cannot serve
-two-character queries at all: `火山` and `栄養` return 0 and must go to a `LIKE '%…%'`
-scan over `articles`, or to a bigram index later if that scan proves too slow at full
-corpus size.
+`trigram` (SQLite ≥ 3.34) fixes every query of three characters or more and also survives
+mid-word substring queries, which is what Japanese users actually type. It cannot serve
+two-character queries at all.
 
-So `index.py` should build the FTS table with `tokenize=trigram` for Japanese corpora,
-route queries shorter than three characters to `LIKE`, and reserve `unicode61` for
-Latin-script fixtures. Ranking stays bm25 with a title weight boost; snips come from
-`snippet()`.
+So `index.py` builds the FTS table with `tokenize=trigram` for the disc and
+`tokenize=unicode61 remove_diacritics 2` for the Latin fixture (`--tokenizer auto` picks
+by adapter; the value is stored in `meta.tokenizer`). `index.search` dispatches on it:
 
-## What the Japanese data changes in the schema
+- trigram corpus, query < 3 characters → `LIKE '%…%'` scan over `articles`
+  (`火山`, `栄養` matched this way; they returned nothing under the old path).
+- trigram corpus, query ≥ 3 characters → FTS5 `MATCH` of the whole query as one quoted
+  phrase, i.e. a substring match (`自由の女神` → the 自由の女神像 article, first hit).
+- `unicode61` corpus → per-token `MATCH`, quoting each token so prose punctuation cannot
+  become FTS syntax, with a prefix on the last token so search feels live while typing.
 
-- `word_count` counts whitespace-separated tokens and is meaningless here: measured
+Ranking is bm25 with a title boost (8.0 title, 4.0 reading, 1.0 body); snippets come from
+`snippet()`. `verify` round-trips a title term *and*, for trigram corpora, a real
+two-character query, so both paths are exercised rather than just counted.
+
+## What the Japanese data changed in the schema
+
+These are applied in v2, not proposals:
+
+- `word_count` counted whitespace-separated tokens and is meaningless here: measured
   averages were 11.6 "words" against 877 characters per article (longest 79,414
-  characters). The corpus needs character counts; treat this as schema v2 rather than
-  shipping a number the UI cannot explain.
-- `slug` should be the disc's numeric `refid`: it is already ASCII and stable, so no
-  transliteration is needed and cross-references resolve by id.
-- `category`: articles carry no taxonomy on disc, so derive the browse axis from the
-  metadata's `<jtitle>` (五十音 bucket) rather than inventing subject classes.
+  characters). v2 stores `char_count` (characters excluding whitespace) — 30,007,400
+  characters over 39,491 articles on the real disc.
+- `slug` is the disc's numeric `refid`: already ASCII and stable, so no transliteration
+  is needed and cross-references resolve by id.
+- `category` is a 五十音 bucket derived from the metadata's `<jtitle>` reading
+  (articles carry no taxonomy of their own): 38,893 of 39,491 land in a かな row.
+- `xrefs` makes the 306,408 article-to-article cross-references navigable instead of
+  leaving them as dead inline text.
 
 ## App
 
@@ -87,9 +107,22 @@ Latin-script fixtures. Ranking stays bm25 with a title weight boost; snips come 
 - `--selftest <corpus.db>` runs the same query path headlessly and exits non-zero on
   failure, so the parser→index→reader chain is testable without a GUI.
 - Read-only access only: the app cannot corrupt a corpus it is browsing.
-- Japanese input and display are the target case, not an afterthought: IME text entry,
-  CJK line-breaking (no space-delimited words), vertical-ish typography not required,
-  but full-width/half-width and kana/kanji matching are.
+- Three-pane `NavigationSplitView`: 五十音 bucket sidebar → entry list → reader.
+  - The entry list is paged (`pageSize` 250, next page appended as you scroll). Handing
+    all 39,491 rows to a `List` at once stalls the first frame and makes AppKit log a
+    reentrancy warning.
+  - Selection handlers and `loadNextPage` run on the next main-loop turn rather than
+    inside AppKit's own selection callback.
+  - The reader shows the kana reading, character count and source path, renders the body
+    as spaced paragraphs, shows copied media images with captions, and turns the `xrefs`
+    into clickable "See also" links plus a "Referenced by" list (from `backlinks`).
+  - A back button (`⌘[`) walks the reading history, so following cross-references is
+    reversible.
+- Search mirrors the corpus's tokenizer (see above), so a two-character Japanese query
+  works in the GUI exactly as it does in the CLI.
+- Japanese display is the target case, not an afterthought: no space-delimited words to
+  reflow, so paragraphs are separated by spacing; full-width/half-width and kana/kanji
+  matching matter, and the reading field makes titles sortable.
 
 ## Non-goals
 

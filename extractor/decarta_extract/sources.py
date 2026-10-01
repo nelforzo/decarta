@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 
-from .normalize import category_for, html_to_text, pick_title, slugify, word_count
+from .normalize import category_for, char_count, html_to_text, pick_title, slugify
 
 HTML_SUFFIXES = {".htm", ".html", ".xhtml"}
 MEDIA_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".mov", ".avi", ".mp3", ".wav", ".m4a"}
@@ -17,8 +17,16 @@ MAX_HTML_BYTES = 8 * 1024 * 1024  # refuse to slurp CD-sized junk as an entry
 
 @dataclass
 class MediaRef:
+    """An asset the article refers to.
+
+    `abs_path` is set only when the bytes were copied out to disk; `member` always
+    carries the source location (`baggage/<name>`) so a corpus can reference media it
+    did not copy (proprietary thumbnails, or an ingest run without `--media-out`).
+    """
+
     kind: str
-    abs_path: Path
+    abs_path: Path | None = None
+    member: str = ""
     caption: str = ""
 
 
@@ -29,11 +37,14 @@ class Article:
     body: str
     category: str
     source_path: str
+    reading: str = ""
     media: list[MediaRef] = field(default_factory=list)
+    # (target_refid, anchor text) pairs, in reading order.
+    xrefs: list[tuple[str, str]] = field(default_factory=list)
 
     @property
-    def words(self) -> int:
-        return word_count(self.body)
+    def chars(self) -> int:
+        return char_count(self.body)
 
 
 def _decode(raw: bytes) -> str:
@@ -100,12 +111,19 @@ def _sibling_media(page: Path, root: Path, media_out: Path) -> list[MediaRef]:
             shutil.copy2(candidate, dest)
         kind = {"jpg": "image", "jpeg": "image", "png": "image", "gif": "image",
                 "mov": "video", "avi": "video"}.get(candidate.suffix.lstrip(".").lower(), "audio")
-        refs.append(MediaRef(kind=kind, abs_path=dest, caption=""))
+        refs.append(MediaRef(kind=kind, abs_path=dest, member=str(rel), caption=""))
     return refs
+
+
+def _encarta_its(root, media_out=None, **kwargs):
+    """Lazy bridge to the ITSS adapter so `sources` imports no 7-Zip path unless used."""
+    from .encarta import encarta_its
+    return encarta_its(root, media_out=media_out, **kwargs)
 
 
 ADAPTERS: dict[str, Callable[..., Iterator[Article]]] = {
     "generic-html": generic_html,
+    "encarta-its": _encarta_its,
 }
 
 
