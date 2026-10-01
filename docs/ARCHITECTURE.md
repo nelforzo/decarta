@@ -172,6 +172,11 @@ The reader shows the disc's pictures; nothing else from `<files>` is converted y
 - Japanese display is the target case, not an afterthought: no space-delimited words to
   reflow, so paragraphs are separated by spacing; full-width/half-width and kana/kanji
   matching matter, and the reading field makes titles sortable.
+- `make dist` / `scripts/build-app.sh` packages a self-contained `Decarta.app`: the
+  release binary, `Resources/corpus.db` and `Resources/media/`, ad-hoc signed. Inside a
+  `.app` the bundle's own corpus wins over `build/corpus.db` in the working directory, and
+  a recorded absolute `media_root` is only honoured while it exists — otherwise the reader
+  falls back to `media/` beside the corpus, so the app keeps working after being moved.
 
 ## Non-goals
 

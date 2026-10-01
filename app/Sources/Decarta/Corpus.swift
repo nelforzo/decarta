@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SQLite3
 
@@ -90,15 +91,30 @@ final class Corpus {
         sourceLabel = meta["source_label"] ?? "unknown"
         builtAt = meta["built_at"] ?? "unknown"
         tokenizer = meta["tokenizer"] ?? "unicode61"
-        if let root = meta["media_root"], !root.isEmpty {
-            // Older corpora may hold a relative path; anchor it to the corpus's own
-            // directory rather than to whatever cwd the app was launched with.
-            if root.hasPrefix("/") {
-                mediaRoot = URL(fileURLWithPath: root)
-            } else {
-                mediaRoot = URL(fileURLWithPath: root,
-                                relativeTo: path.deletingLastPathComponent()).standardizedFileURL
-            }
+        mediaRoot = Corpus.resolveMediaRoot(meta: meta, corpusPath: path)
+    }
+
+    /// Find the media tree, preferring what the corpus recorded but falling back to a
+    /// `media/` directory beside the corpus file.
+    ///
+    /// The fallback is what makes a packaged `Decarta.app` self-contained: the corpus is
+    /// built on a machine where the media lived under `build/`, so the recorded
+    /// `meta.media_root` is an absolute path that means nothing once the app is copied to
+    /// /Applications. Inside the bundle the pictures sit next to `corpus.db` instead.
+    private static func resolveMediaRoot(meta: [String: String], corpusPath: URL) -> URL? {
+        let corpusDir = corpusPath.deletingLastPathComponent()
+        var candidates: [URL] = []
+        if let recorded = meta["media_root"], !recorded.isEmpty {
+            candidates.append(recorded.hasPrefix("/")
+                ? URL(fileURLWithPath: recorded)
+                : URL(fileURLWithPath: recorded, relativeTo: corpusDir).standardizedFileURL)
+        }
+        candidates.append(corpusDir.appendingPathComponent("media"))
+        return candidates.first { candidate in
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: candidate.path,
+                                                        isDirectory: &isDirectory)
+            return exists && isDirectory.boolValue
         }
     }
 
@@ -435,6 +451,29 @@ final class Corpus {
             FileManager.default.fileExists(atPath: mediaRoot.appendingPathComponent(rel).path)
         }
         return (relPaths.count, resolved)
+    }
+
+    /// Decode-check a few pictures the way the gallery does, for `--selftest`.
+    ///
+    /// Resolving a path is not the same as being able to display it: this asserts that
+    /// `NSImage` actually loads the file, which is what decides whether a reader sees a
+    /// picture or the "could not be decoded" placeholder.
+    func mediaDecodeCheck(sample: Int = 8) throws -> (checked: Int, decoded: Int) {
+        var relPaths: [String] = []
+        try query("SELECT rel_path FROM media WHERE kind = 'image' LIMIT ?",
+                  bind: [String(sample)]) { relPaths.append($0.string(0)) }
+        guard let mediaRoot else { return (0, 0) }
+        var checked = 0
+        var decoded = 0
+        for rel in relPaths {
+            let url = mediaRoot.appendingPathComponent(rel)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            checked += 1
+            if let image = NSImage(contentsOf: url), image.size.width > 0 {
+                decoded += 1
+            }
+        }
+        return (checked, decoded)
     }
 
     /// Every article that cross-references `slug` — the "referenced by" direction.

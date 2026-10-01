@@ -60,7 +60,35 @@ extractor/
     index.py        # SQLite + FTS5 writer (schema v2), tokenizer-aware search
 sample-data/        # tiny hand-written corpus, a pipeline fixture (not the product)
 app/                # SwiftPM package, SwiftUI reader
+scripts/
+  build-app.sh      # ingest the disc, build the reader, package a self-contained .app
+packaging/
+  Info.plist        # bundle template; version and build number filled in at package time
 docs/               # architecture, corpus format, disc-source notes
+```
+
+## The packaged app
+
+`make dist` (or `scripts/build-app.sh`) ingests the disc, builds the reader in release
+configuration, and assembles a bundle that carries its own content:
+
+```
+build/Decarta.app/Contents/
+  MacOS/Decarta              # the reader
+  Info.plist                 # version from `git describe`, bundle id com.nelforzo.decarta
+  Resources/corpus.db        # the whole corpus (SQLite + FTS5)
+  Resources/media/baggage/   # the pictures the corpus references
+```
+
+The bundle is self-contained and location-independent: the corpus records an absolute
+`media_root` from the machine that built it, so the reader prefers that path only if it
+still exists and otherwise falls back to `media/` beside `corpus.db`. It is ad-hoc signed
+(`codesign --sign -`), which is enough to launch locally and to keep the app's identity
+when it is moved, without pretending to be a notarised distribution.
+
+```sh
+SKIP_INGEST=1 ./scripts/build-app.sh   # repackage from an existing corpus.db in seconds
+cp -R build/Decarta.app /Applications/
 ```
 
 ## Quick start
@@ -75,6 +103,9 @@ make verify
 make list            # 五十音 bucket counts
 make query Q="自由の女神"
 make run
+
+# A self-contained app you can keep in /Applications:
+make dist            # ingest the disc, build, and package build/Decarta.app
 ```
 
 Without a disc, the same commands work against `sample-data/`:

@@ -124,6 +124,10 @@ enum Selftest {
                 check("pictures resolve to files on disk",
                       stats.checked > 0 && stats.checked == stats.resolved,
                       "\(stats.resolved)/\(stats.checked)")
+                let decode = try corpus.mediaDecodeCheck(sample: 8)
+                check("pictures decode as images",
+                      decode.checked > 0 && decode.checked == decode.decoded,
+                      "\(decode.decoded)/\(decode.checked) decoded")
             }
         } catch {
             print("FAIL  query: \(error.localizedDescription)")

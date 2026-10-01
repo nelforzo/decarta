@@ -23,7 +23,7 @@ BIN := app/.build/debug/Decarta
 Q ?=
 
 .DEFAULT_GOAL := all
-.PHONY: all sample ingest ingest-disc mount unmount verify query show list app selftest run clean distclean
+.PHONY: all sample ingest ingest-disc mount unmount verify query show list app selftest run dist clean distclean
 
 all: sample ingest verify app selftest
 
@@ -63,6 +63,10 @@ list:
 
 app:
 	cd app && swift build
+
+## build a self-contained Decarta.app (ingests the disc; SKIP_INGEST=1 to repackage)
+dist:
+	./scripts/build-app.sh
 
 ## headless end-to-end check of the app against the corpus
 selftest: app

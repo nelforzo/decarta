@@ -52,21 +52,29 @@ struct LaunchOptions {
     """
 
     /// Ordered search for a usable corpus.
+    ///
+    /// A packaged `Decarta.app` carries its own corpus, and that must win over anything in
+    /// the current working directory — otherwise launching the installed app from inside
+    /// the repo would silently open the development build.
     static func resolveCorpus(explicit: URL?) -> URL? {
         var candidates: [URL] = []
         if let explicit { candidates.append(explicit) }
         if let env = ProcessInfo.processInfo.environment["DECARTA_CORPUS"], !env.isEmpty {
             candidates.append(URL(fileURLWithPath: env))
         }
+
+        let bundled = Bundle.main.resourceURL?.appendingPathComponent("corpus.db")
+        let isAppBundle = Bundle.main.bundlePath.hasSuffix(".app")
+        if isAppBundle, let bundled { candidates.append(bundled) }
+
         candidates.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("build/corpus.db"))
         if let support = FileManager.default.urls(for: .applicationSupportDirectory,
                                                   in: .userDomainMask).first {
             candidates.append(support.appendingPathComponent("Decarta/corpus.db"))
         }
-        if let resources = Bundle.main.resourceURL {
-            candidates.append(resources.appendingPathComponent("corpus.db"))
-        }
+        if !isAppBundle, let bundled { candidates.append(bundled) }
+
         return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 }
